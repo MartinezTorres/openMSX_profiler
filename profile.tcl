@@ -16,6 +16,7 @@
 #
 # profile [<ids>] [<unit>]
 # profile_osd [<unit>]
+# profile_restart
 # profile_break <ids>
 # profile::section_begin <ids>
 # profile::section_end <ids>
