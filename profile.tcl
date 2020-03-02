@@ -44,9 +44,18 @@ namespace eval profile {
 	variable frame_total_time 0
 	variable width 120
 	variable height 6
+    variable avg_ratio 0.05
 	variable osd_unit %
     
-    proc getDebugString {} {set a [peek16 0xF931 ]; set b ""; while {[peek $a] > 0} { append b [format %c [peek $a]];  incr a 1;  }; expr {$b}}
+    proc getDebugString {} {
+        set a [peek16 0xF931 ]; 
+        set b ""; 
+        while {[peek $a] != 0 && [string length $b] < 30} { 
+            append b [format %c [peek $a]];  
+            incr a 1;  
+        }; 
+        expr {$b}
+    }
     
     debug set_watchpoint write_io 0x2C {} [namespace code {
 		section_begin [getDebugString]
@@ -242,9 +251,10 @@ namespace eval profile {
             variable frame_total_time
 
             if {$balance == 1} {
+                variable avg_ratio
                 set section_time [expr {$sync_time - $section_sync_time}]
                 set section_time_max [expr {$section_time>$section_time_max?$section_time:$section_time_max}]
-                set section_time_avg [expr {$section_time_avg == 0 ? $section_time : $section_time_avg * 0.99 + $section_time * 0.01}]
+                set section_time_avg [expr {$section_time_avg == 0 ? $section_time : $section_time_avg * (1-$avg_ratio) + $section_time * $avg_ratio}]
                 set section_time_exp [expr {$frame_total_time != 0 ? 0.01 * $expected_ratio * $frame_total_time : 0}]
             }
 
@@ -272,7 +282,6 @@ namespace eval profile {
 		section_with [section_list] {
 			upvar index index
 			variable frame_total_time
-			variable osd_unit
 
 			if {![osd exists profile.$id]} {
 				variable width
@@ -286,30 +295,16 @@ namespace eval profile {
 				osd create text profile.$id.text -x 2 -y 1 -size [expr {$height - 3}] -scaled true -rgba 0xffffffff
 			}
 
-			set fraction_exp [expr {$frame_total_time != 0 ? $section_time_exp / $frame_total_time : 0}]
-			
-			set fraction_max [expr {$frame_total_time != 0 ? $section_time_max / $frame_total_time : 0}]
-			set fraction_max_clamped [expr {$fraction_max < 0 ? 0 : $fraction_max > 1 ? 1 : $fraction_max}]
-
 			set fraction [expr {$frame_total_time != 0 ? $section_time_avg / $frame_total_time : 0}]
 			set fraction_clamped [expr {$fraction < 0 ? 0 : $fraction > 1 ? 1 : $fraction}]
 			osd configure profile.$id.bar -w [expr {$fraction_clamped * [osd info profile.$id -w]}]
 
-			if {$osd_unit eq "s"} {
-				set text [format "%s avg:%.3f s max:%.3f s" $id $frame_time_avg $frame_time_max]
-			} elseif {$osd_unit eq "ms"} {
-				set text [format "%s avg:%.2f ms max:%.2f ms" $id [to_ms $frame_time_avg $frame_time_max]]
-			} elseif {$osd_unit eq "t"} {
-				set text [format "%s avg:%d T max:%d T" $id [to_cycles $frame_time_avg $frame_time_max]]
-			} elseif {$osd_unit eq "lines"} {
-				set text [format "%s avg:%.0f lines max:%.0f lines" $id [to_lines $frame_time_avg $frame_time_max]]
-			} else {
-                if {$fraction_exp>0} {
-                    set text [format "%s exp:%00.0f%% avg:%00.1f%% max:%00.1f%%" $id [expr {$fraction_exp * 100}] [expr {$fraction * 100}] [expr {$fraction_max * 100}]] 
-                } {
-                    set text [format "%s avg:%00.1f%% max:%00.1f%%" $id [expr {$fraction * 100}] [expr {$fraction_max * 100}]] 
-                }
-			}
+            if {$section_time_exp>0} {
+                set text [format "%s exp:%s avg:%s max:%s" $id [to_unit $section_time_exp] [to_unit $section_time_avg] [to_unit $section_time_max]]
+            } else {
+                set text [format "%s avg:%s max:%s" $id [to_unit $section_time_avg] [to_unit $section_time_max]]
+            }
+
 			osd configure profile.$id.text -text $text
 		}
 	}
@@ -333,18 +328,23 @@ namespace eval profile {
 		expr {$value > 255 ? 255 : $value < 0 ? 0 : $value}
 	}
 
-	proc to_ms {seconds} {
-		expr {$seconds * 1000}
-	}
 
-	proc to_lines {seconds} {
-		expr {$seconds * 15720}
-	}
-
-	proc to_cycles {seconds} {
-		set cpu [get_active_cpu]
-		expr {round($seconds * [machine_info ${cpu}_freq])}
-	}
+    proc to_unit {seconds} {
+        variable osd_unit
+        variable frame_total_time
+        if {$osd_unit eq "s"} {
+            return [format "%.3f s" [expr {$seconds}]]
+        } elseif {$osd_unit eq "ms"} {
+            return [format "%.2f ms" [expr {$seconds * 1000}]]
+        } elseif {$osd_unit eq "t"} {
+            set cpu [get_active_cpu]
+            return [format "%d T" [expr {round($seconds * [machine_info ${cpu}_freq)}]]
+        } elseif {$osd_unit eq "lines"} {
+            return [format "%.1f lines" [expr {$seconds * 3579545 / 228}]]
+        } else {
+            return [format "%00.1f%%" [expr {$frame_total_time != 0 ? 100 * $seconds / $frame_total_time : 0}]]
+        }
+    }
 
 	set_help_text profile [join {
 		"Usage: profile \[<ids>] \[<unit>]\n"
@@ -358,52 +358,25 @@ namespace eval profile {
 		"- balance: whether the CPU is currently in a section\n"
 		"  If section starts and ends are imbalanced, balance will ever-increase.\n"
 	} {}]
-	proc profile {{ids {}} {unit "lines"}} {
+	proc profile {{ids {}} {unit "%"}} {
 		if {$ids eq {}} {
 			set ids [section_list]
 		}
 		section_with $ids {
 			upvar unit unit
 			variable frame_total_time
-			set percentage [expr {$frame_total_time != 0 ? $frame_time * 100 / $frame_total_time : 0}]
-			set current [expr {$total_time - $frame_time_base}]
-            set current_avg [expr { ( $total_time - $frame_time_base) / ($count+0.0001) }]
 
-			if {$unit eq "s"} {
-				set frame_unit [format {%.8f s} $frame_time]
-				set current_unit [format {%.8f s} $current]
-				set current_avg_unit [format {%.8f s} $current_avg ]
-			} elseif {$unit eq "ms"} {
-				set frame_unit [format {%.5f ms} [to_ms $frame_time]]
-				set current_unit [format {%.5f ms} [to_ms $current]]
-				set current_avg_unit [format {%.5f ms} [to_ms $current_avg]]
-			} elseif {$unit eq "t"} {
-				set frame_unit [format {%d T} [to_cycles $frame_time]]
-				set current_unit [format {%d T} [to_cycles $current]]
-				set current_avg_unit [format {%d T} [to_cycles $current_avg]]
-			} elseif {$unit eq "lines"} {
-				set frame_unit [format {%.5f lines} [to_lines $frame_time]]
-				set current_unit [format {%.5f lines} [to_lines $current]]
-				set current_avg_unit [format {%.5f lines} [to_lines $current_avg]]
-			} else {
-				set frame_unit [format {%05.2f%%} $percentage]
-				set current_unit [format {%.8f s} $current]
-				set current_avg_unit [format {%.8f s} $current_avg ]
-			}
-
-			if {$frame_total_time != 0} {
-				puts [format {%s :: frame: %s, current: %s, count: %d, balance: %d} \
-					$id $frame_unit $current_unit $count $balance]
-			} else {
-				puts [format {%s :: current: %s, count: %d, balance: %d, avg: %s} \
-					$id $current_unit $count $balance $current_avg_unit]
-			}
+            if {$section_time_exp>0} {
+                set text [format "%s exp:%s avg:%s max:%s" $id [to_unit $section_time_exp] [to_unit $section_time_avg] [to_unit $section_time_max]]
+            } else {
+                set text [format "%s avg:%s max:%s" $id [to_unit $section_time_avg] [to_unit $section_time_max]]
+            }
 		}
 	}
 
 	proc profile_tab {args} {
 		if {[llength $args] == 2} { return [section_list] }
-		if {[llength $args] == 3} { return [list s ms t %] }
+		if {[llength $args] == 3} { return [list s ms t lines %] }
 	}
 
 	set_tabcompletion_proc profile [namespace code profile_tab]
@@ -414,7 +387,7 @@ namespace eval profile {
 		"The OSD updates at the beginning of each frame. "
 		"Optionally specify the unit (s, ms, t or %)."
 	} {}]
-	proc profile_osd {{unit "lines"}} {
+	proc profile_osd {{unit "%"}} {
 		if {$unit ne ""} {
 			variable osd_unit
 			set osd_unit $unit
@@ -439,7 +412,7 @@ namespace eval profile {
     }
 
 	proc profile_osd_tab {args} {
-		if {[llength $args] == 2} { return [list s ms t %] }
+		if {[llength $args] == 2} { return [list s ms t lines %] }
 	}
 
 	set_tabcompletion_proc profile_osd [namespace code profile_osd_tab]
