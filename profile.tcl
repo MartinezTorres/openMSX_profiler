@@ -401,6 +401,11 @@ namespace eval profile {
 		return
 	}
     
+
+	set_help_text profile_restart [join {
+		"Usage: profile_restart\n"
+		"Restart the counters for average and max found values."
+	} {}]
     proc profile_restart {} {
         section_with [section_list] {
             set section_sync_time 0
