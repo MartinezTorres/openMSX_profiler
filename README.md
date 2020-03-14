@@ -1,5 +1,5 @@
-# OpenMSX_profiler
-Profiler script for OpenMSX with hooks for easy C code profiling.
+# openMSX_profiler
+Profiler script for openMSX with hooks for easy C code profiling.
 
 This code is based on Laurens Holst profiler, and few instructions were added to better interface with C code.
 Some examples, documents, and history of this profile is available in the following thread from MRC:
@@ -7,7 +7,7 @@ Some examples, documents, and history of this profile is available in the follow
 https://www.msx.org/forum/msx-talk/openmsx/performance-profiler-first-attempt
 
 To use the profiler, just copy `profile.tcl` to `~/.openMSX/share/scripts/`, the profiler commands will be made available.
-Booting OpenMSX with the argument `-command "profile::section_scope_bp frame 0xFD9F; profile_osd p;"` will show:
+Booting openMSX with the argument `-command "profile::section_scope_bp frame 0xFD9F; profile_osd p;"` will show:
 
 ![Sample Profiler](/images/eg001.png)
  

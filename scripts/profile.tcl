@@ -58,7 +58,7 @@ namespace eval profile {
 # OSD Interface
 #    
 	variable width 150
-	variable height 5
+	variable height 6
     variable avg_ratio 0.05
     
     variable osd_units { % s ms t lines }
@@ -406,6 +406,9 @@ namespace eval profile {
 # OSD interface:
 #
 
+    variable osd_actions [dict create]
+    variable osd_upkeep [dict create]
+
 	proc osd_update {} {
         
         variable last_event_time
@@ -420,52 +423,191 @@ namespace eval profile {
 		if {![osd exists profile]} {
 			return
 		}
-		section_with [section_list] {
+        
+        variable osd_upkeep
+        dict for {widget task} $osd_upkeep { eval $task }
+        
+        
+        if {![osd exists profile.scroll]} {
+
+            variable height
+            variable width
+            variable osd_actions
+            
+            set height01 [expr {0.1 * $height}]
+            
+            proc add_scroll_button {parent icon1 icon2 upkeep1 upkeep2} {
+
+                variable height
+                variable width
+                variable osd_actions
+                variable osd_upkeep
+
+                set height01 [expr {0.1 * $height}]
+                
+                osd create rectangle $parent.scroll -relx 1.0 -w [expr {-1*$height}] -h $height -bordersize $height01 -borderrgba 0x000000FF -rgba 0x808080FF
+                osd create text      $parent.scroll.text -x [expr {1.5*$height/6. - $height}] -y [expr {-0.25*$height/6.}] -size [expr {$height*5/6}] \
+                   -scaled true -rgba 0x000000FF -font "skins/DejaVuSansMono.ttf" -text $icon1
+
+                dict set osd_actions $parent.scroll "eval {
+                    if { \[osd info $parent.scroll.text -text] == \"$icon1\" } {
+                        osd configure $parent.scroll.text -text \"$icon2\"
+                    } else {
+                        osd configure $parent.scroll.text -text \"$icon1\"
+                    }
+                }"
+                
+                dict set osd_upkeep $parent.scroll "eval {
+                    variable width
+                    variable height
+                    set x \[osd info $parent -x]
+                    set h \[osd info $parent -h]
+                    if { \[osd info $parent.scroll.text -text] == \"$icon1\" } {
+                        $upkeep1
+                    } else {
+                        $upkeep2
+                    }
+                }"
+            }
+            
+            #
+            # Left and right buttons
+            #
+            
+            add_scroll_button profile "\u25C4" "\u25BA" {
+                osd configure profile -x [expr {$x * 0.8 + 0 * 0.2}] 
+            } { 
+                osd configure profile -x [expr {$x * 0.8 + (- $width + $height)*0.2}] 
+            }
+            
+            
+            # OSD has 4 sections: Configuration
+            # Favorite Sections
+            # All Sections
+            # Detail of the Selected Section 
+
+            # Configuration
+            osd create rectangle profile.config -y $height -w $width -h [expr {10*$height}] -scaled true -clip true -bordersize $height01 -borderrgba 0x000000FF -rgba 0x00000088
+            osd create text      profile.config.text -x 0 -y [expr { 0.5  * $height / 6.}] -size [expr {$height * 4 / 6}] -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Configuration"
+
+            add_scroll_button profile.config "\u25BC" "\u25B2" {
+                osd configure profile.config -h [expr {$h * 0.8 + $height * 0.2}]
+            } { 
+                osd configure profile.config -h [expr {$h * 0.8 + (10*$height) * 0.2}]
+            }
+            
+            proc add_config_button {name x y text action} {
+                variable width
+                variable height
+                set height01 [expr {0.1 * $height}]
+                
+                osd create rectangle profile.config.$name  -x [expr $x * $width/4] -y [expr ($y+1)*$height] -w [expr {5.9 * $height}] -h [expr 0.9*$height] \
+                    -bordersize $height01 -borderrgba 0x000000FF -rgba 0x808080FF
+                osd create text      profile.config.$name.text -x [expr {1.5*$height/6.}] -y [expr {0.5*$height/6.}] -size [expr {$height*4/6}] \
+                    -rgba 0xFFFFFFFF -font "skins/DejaVuSans.ttf" -text [eval $text]
+
+                dict set osd_actions profile.config.$name "{
+                    $action
+                    eval $text
+                }"
+            }
+            
+            add_config_button sort  0 0 {return "Sort:"} {}
+            add_config_button unit  1 0 {return "Unit:"} {}
+            add_config_button z80i  2 0 {return "Z80i:"} {}
+            add_config_button file  3 0 {return "File:"} {}
+            add_config_button pause 0 1 {return "Pause:"} {}
+            add_config_button clear 1 1 {return "Clear:"} {}
+            add_config_button avg   2 1 {return "Avg:"} {}
+ 
+            osd create rectangle profile.config.info  -x [expr 0*$height] -y [expr 3*$height] -w [expr {17.9 * $height}] -h [expr 1.9*$height] -bordersize $height01 -borderrgba 0x000000FF -rgba 0x8080880
+            osd create text      profile.config.info.text -x [expr {1.5*$height/6.}] -y [expr {0.5*$height/6.}] -size [expr {$height*4/6}] \
+               -scaled true -rgba 0xFFFFFFFF -font "skins/DejaVuSans.ttf" -text "Command Info"
+            
+            # Favorite Sections
+            osd create rectangle profile.favorite -y 0 -w $width -h [expr {10*$height}] -scaled true -bordersize $height01 -borderrgba 0x000000FF -rgba 0x00000088
+            osd create text      profile.favorite.text -x 0 -y [expr { 0.5  * $height / 6.}] -size [expr {$height * 4 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Favorite Sections"
+
+
+            add_scroll_button profile.favorite "\u25BC" "\u25B2" {
+                osd configure profile.favorite -y [expr {[osd info profile.config -y] + [osd info profile.config -h]}]                
+                osd configure profile.favorite -h [expr {$h * 0.8 + $height * 0.2}]
+            } { 
+                osd configure profile.favorite -y [expr {[osd info profile.config -y] + [osd info profile.config -h]}]                
+                osd configure profile.favorite -h [expr {$h * 0.8 + (10*$height) * 0.2}]
+            }
+            
+            
+            # All Sections
+            osd create rectangle profile.all -y 0 -w $width -h [expr {10*$height}] -scaled true -bordersize $height01 -borderrgba 0x000000FF -rgba 0x00000088
+            osd create text      profile.all.text -x 0 -y [expr { 0.5  * $height / 6.}] -size [expr {$height * 4 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "All Sections"
+
+            add_scroll_button profile.all "\u25BC" "\u25B2" {
+                osd configure profile.all -y [expr {[osd info profile.favorite -y] + [osd info profile.favorite -h]}]                
+                osd configure profile.all -h [expr {$h * 0.8 + $height * 0.2}]
+            } { 
+                osd configure profile.all -y [expr {[osd info profile.favorite -y] + [osd info profile.favorite -h]}]                
+                osd configure profile.all -h [expr {$h * 0.8 + (10*$height) * 0.2}]
+            }
+
+            
+            # Detail of the Selected Section 
+            osd create rectangle profile.details -y 0 -w $width -h [expr {10*$height}] -scaled true -bordersize $height01 -borderrgba 0x000000FF -rgba 0x00000088
+            osd create text      profile.details.text -x 0 -y [expr { 0.5  * $height / 6.}] -size [expr {$height * 4 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Details: "
+
+            add_scroll_button profile.details "\u25BC" "\u25B2" {
+                osd configure profile.details -y [expr {[osd info profile.all -y] + [osd info profile.all -h]}]                
+                osd configure profile.details -h [expr {$h * 0.8 + $height * 0.2}]
+            } { 
+                osd configure profile.details -y [expr {[osd info profile.all -y] + [osd info profile.all -h]}]                
+                osd configure profile.details -h [expr {$h * 0.8 + (10*$height) * 0.2}]
+            }
+
+       }
+       return 
+
+
+
+        if {0 && ![osd exists profile.main]} {
+            
+            variable width
+            variable height
+            
+            set height20 [expr {2.0 * $height}]
+            set height18 [expr {1.8 * $height}]
+            set height01 [expr {0.1 * $height}]
+
+            set widthButton [expr {3.8 * $height}]
+            osd create rectangle profile.main -x 0 -y $height20 -w $width -h $height20 -scaled true -clip true -rgba 0x80000088
+            
+            osd create rectangle profile.main.restore -x [expr {0.1 * $height}] -y $height01 -w [expr {5.8 * $height}] -h $height18 -scaled true \
+                -bordersize $height01 -borderrgba 0x000000FF -rgba 0x008000FF
+            osd create text      profile.main.restore.text -x [expr {4*$height / 6.}] -y [expr {2*$height / 6.}] -size [expr {2*$height * 3 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Restore"
+
+            osd create rectangle profile.main.hide -x [expr {6.1 * $height}] -y $height01 -w [expr {5.8 * $height}] -h $height18 -scaled true \
+                -bordersize $height01 -borderrgba 0x000000FF -rgba 0x008000FF
+            osd create text      profile.main.hide.text -x [expr {4*$height / 6.}] -y [expr {2*$height / 6.}] -size [expr {2*$height * 3 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Hide"
+
+            osd create rectangle profile.main.sorting -x [expr {12.1 * $height}] -y $height01 -w [expr {5.8 * $height}] -h $height18 -scaled true \
+                -bordersize $height01 -borderrgba 0x000000FF -rgba 0x008000FF
+            osd create text      profile.main.sorting.text -x [expr {4*$height / 6.}] -y [expr {2*$height / 6.}] -size [expr {2*$height * 3 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Sorting"
+
+            osd create rectangle profile.main.units -x [expr {18.1 * $height}] -y $height01 -w [expr {5.8 * $height}] -h $height18 -scaled true \
+                -bordersize $height01 -borderrgba 0x000000FF -rgba 0x008000FF
+            osd create text      profile.main.units.text -x [expr {4*$height / 6.}] -y [expr {2*$height / 6.}] -size [expr {2*$height * 3 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Units"
+
+            osd create rectangle profile.main.reset -x [expr {24.1 * $height}] -y $height01 -w [expr {5.8 * $height}] -h $height18 -scaled true \
+                -bordersize $height01 -borderrgba 0x000000FF -rgba 0x008000FF
+            osd create text      profile.main.reset.text -x [expr {4*$height / 6.}] -y [expr {2*$height / 6.}] -size [expr {2*$height * 3 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Reset"
+        }
+
+		
+        section_with [section_list] {
 			upvar index index
 			variable frame_total_time
 
 			set index [lsearch -exact [section_list] $id]
 
-			if {![osd exists profile_main]} {
-				variable width
-				variable height
-                
-                set height20 [expr {2.0 * $height}]
-                set height18 [expr {1.8 * $height}]
-                set height01 [expr {0.1 * $height}]
-
-                set widthButton [expr {3.8 * $height}]
-				osd create rectangle profile_main -x 0 -y $height20 -w $width -h $height20 -scaled true -clip true -rgba 0x80000088
-                
-                osd create rectangle profile_main.restore -x [expr {0.1 * $height}] -y $height01 -w [expr {5.8 * $height}] -h $height18 -scaled true \
-                    -bordersize $height01 -borderrgba 0x000000FF -rgba 0x008000FF
-                osd create text      profile_main.restore.text -x [expr {4*$height / 6.}] -y [expr {2*$height / 6.}] -size [expr {2*$height * 3 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Restore"
-
-                osd create rectangle profile_main.hide -x [expr {6.1 * $height}] -y $height01 -w [expr {5.8 * $height}] -h $height18 -scaled true \
-                    -bordersize $height01 -borderrgba 0x000000FF -rgba 0x008000FF
-                osd create text      profile_main.hide.text -x [expr {4*$height / 6.}] -y [expr {2*$height / 6.}] -size [expr {2*$height * 3 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Hide"
-
-                osd create rectangle profile_main.sorting -x [expr {12.1 * $height}] -y $height01 -w [expr {5.8 * $height}] -h $height18 -scaled true \
-                    -bordersize $height01 -borderrgba 0x000000FF -rgba 0x008000FF
-                osd create text      profile_main.sorting.text -x [expr {4*$height / 6.}] -y [expr {2*$height / 6.}] -size [expr {2*$height * 3 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Sorting"
-
-                osd create rectangle profile_main.units -x [expr {18.1 * $height}] -y $height01 -w [expr {5.8 * $height}] -h $height18 -scaled true \
-                    -bordersize $height01 -borderrgba 0x000000FF -rgba 0x008000FF
-                osd create text      profile_main.units.text -x [expr {4*$height / 6.}] -y [expr {2*$height / 6.}] -size [expr {2*$height * 3 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Units"
-
-                osd create rectangle profile_main.reset -x [expr {24.1 * $height}] -y $height01 -w [expr {5.8 * $height}] -h $height18 -scaled true \
-                    -bordersize $height01 -borderrgba 0x000000FF -rgba 0x008000FF
-                osd create text      profile_main.reset.text -x [expr {4*$height / 6.}] -y [expr {2*$height / 6.}] -size [expr {2*$height * 3 / 6}] -scaled true -rgba 0xffffffff -font "skins/DejaVuSans.ttf" -text "Reset"
-            }
-
-			if {![osd exists profile_detail]} {
-				variable width
-				variable height
-                
-				osd create rectangle profile_detail -x 0 -y -$height -w $width -h $height20 -scaled true -clip true -rgba 0x80000088
-                
-            }
-            
 			if {![osd exists profile.$id]} {
 				variable width
 				variable height
@@ -580,10 +722,11 @@ namespace eval profile {
 			set osd_unit $unit
 		}
 		if {![osd exists profile]} {
-			osd create rectangle profile
+            variable width
+			osd create rectangle profile -x 0 -y 20 -w $width -relh 1 -scaled true -clip true -rgba 0x00000000
 			after "mouse button1 down" [namespace code on_mouse_button1_down]
 		} elseif {$unit eq ""} {
-			osd destroy profile
+#			osd destroy profile
 		}
 		return
 	}
@@ -600,7 +743,7 @@ namespace eval profile {
 			variable osd_unit
 			set osd_unit $unit
 		}
-			osd destroy profile
+#			osd destroy profile
 		return
 	}
 
@@ -642,14 +785,20 @@ namespace eval profile {
 	set_tabcompletion_proc profile_break [namespace code profile_break_tab]
 
 	proc on_mouse_button1_down {} {
+        
+        puts "Mouse down"
+        
+        variable osd_actions
+        dict for {widget task} $osd_actions {
+            
+            puts [format "%s%s" "Test mouse over: " $widget]
 
-        if {[is_mouse_over profile_main.restore]} {
-        }
+            if {[is_mouse_over $widget]} {
 
-        if {[is_mouse_over profile_main.hide]} {
-        }
+                puts [format "%s %s %s" "Execute mouse over: " $widget $task]
 
-        if {[is_mouse_over profile_main.sorting]} {
+                eval $task
+            }
         }
         
         if {[is_mouse_over profile_main.units]} {
@@ -661,8 +810,6 @@ namespace eval profile {
             set osd_unit [lindex $osd_units $osd_unit_index]
         }
 
-        if {[is_mouse_over profile_main.reset]} {
-        }
 
         
 		if {[osd exists profile]} {
