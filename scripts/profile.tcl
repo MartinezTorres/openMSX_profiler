@@ -105,7 +105,7 @@ namespace eval profile {
             append s [format %c [peek $address]];  
             incr address 1;  
         }; 
-        expr {$s}
+        return $s
     }
     
 	set_help_text profile::enable_z80_interface [join {
@@ -129,7 +129,7 @@ namespace eval profile {
                 eval [string range $name 5 end]
             } else {
                 set z80_self_estimation_time $::wp_last_value
-                section_begin $name
+                section_begin [string map {" " "_"} $name]
                 set z80_self_estimation_time 0
             }
         }]
@@ -140,7 +140,7 @@ namespace eval profile {
                 eval [string range $name 5 end]
             } else {
                 set z80_self_estimation_time $::wp_last_value
-                section_end $name
+                section_end [string map {" " "_"} $name]
                 set z80_self_estimation_time 0
             }
         }]
@@ -286,8 +286,6 @@ namespace eval profile {
 					section_time_max 0 \
 					section_time_exp 0 \
                     start_time 0 \
-                    osd_is_selected 0 \
-                    osd_is_hidden 0 \
 					break false \
 				]
 			}
@@ -327,7 +325,7 @@ namespace eval profile {
 	} {}]
 	proc section_begin {ids} {
         
-		section_create $ids
+        section_create $ids
 
         variable last_event_time
 		set last_event_time [machine_info time]
@@ -410,7 +408,16 @@ namespace eval profile {
         font_sans "skins/DejaVuSans.ttf" \
         unit % \
         current_help_widget "" \
-        num_monitored_sections 0 ] 
+        num_sections 0 \
+        num_favorite_sections 0 \
+        selected_section "" \
+        favorite_sections [dict create] \
+        section_color [dict create] \
+        next_color 0 \
+        sorting_criteria "avg" \
+        profile.all.ordering [dict create] \
+        profile.favorite.ordering [dict create] \
+        ] 
  
     variable gui_buttons [dict create]
     
@@ -600,33 +607,32 @@ namespace eval profile {
 
         
         #
-        # Section: Favorites
-        osd create rectangle profile.favorite -w $w -h [expr 1*$h] -clip true -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x00000088
-        osd create text      profile.favorite.text -x 0 -y [expr 0.5*$h/6] -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $gui_config font_sans] \
-            -text "Favorites"
-
-        add_scroll_button profile.favorite "\u25BC" "\u25B2" {
-            osd configure profile.favorite -y [expr {[osd info profile.config -y] + [osd info profile.config -h]}]                
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*[dict get $gui_config height]}]
-        } { 
-            osd configure profile.favorite -y [expr {[osd info profile.config -y] + [osd info profile.config -h]}]                
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*5*[dict get $gui_config height]}]
-        }
-        
-        #
         # Section: All
         osd create rectangle profile.all -w $w -h [expr 1*$h] -clip true -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x00000088
         osd create text      profile.all.text -x 0 -y [expr 0.5*$h/6] -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $gui_config font_sans] \
             -text "All"
 
         add_scroll_button profile.all "\u25BC" "\u25B2" {
-            osd configure profile.all -y [expr {[osd info profile.favorite -y] + [osd info profile.favorite -h]}]                
+            osd configure profile.all -y [expr {[osd info profile.config -y] + [osd info profile.config -h]}]                
             osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*[dict get $gui_config height]}]
         } { 
-            osd configure profile.all -y [expr {[osd info profile.favorite -y] + [osd info profile.favorite -h]}]                
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*[dict get $gui_config num_monitored_sections]*[dict get $gui_config height]}]
+            osd configure profile.all -y [expr {[osd info profile.config -y] + [osd info profile.config -h]}]                
+            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*(1+[dict get $gui_config num_sections])*[dict get $gui_config height]}]
         }
 
+        #
+        # Section: Favorites
+        osd create rectangle profile.favorite -w $w -h [expr 1*$h] -clip true -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x00000088
+        osd create text      profile.favorite.text -x 0 -y [expr 0.5*$h/6] -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $gui_config font_sans] \
+            -text "Favorites"
+
+        add_scroll_button profile.favorite "\u25BC" "\u25B2" {
+            osd configure profile.favorite -y [expr {[osd info profile.all -y] + [osd info profile.all -h]}]                
+            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*[dict get $gui_config height]}]
+        } { 
+            osd configure profile.favorite -y [expr {[osd info profile.all -y] + [osd info profile.all -h]}]                
+            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*(1+[dict get $gui_config num_favorite_sections])*[dict get $gui_config height]}]
+        }
         
         #
         # Section: Detailed Info
@@ -635,15 +641,129 @@ namespace eval profile {
             -text "Detailed"
 
         add_scroll_button profile.detailed "\u25BC" "\u25B2" {
-            osd configure profile.detailed -y [expr {[osd info profile.all -y] + [osd info profile.all -h]}]                
+            osd configure profile.detailed -y [expr {[osd info profile.favorite -y] + [osd info profile.favorite -h]}]                
             osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*[dict get $gui_config height]}]
         } { 
-            osd configure profile.detailed -y [expr {[osd info profile.all -y] + [osd info profile.all -h]}]                
+            osd configure profile.detailed -y [expr {[osd info profile.favorite -y] + [osd info profile.favorite -h]}]                
             osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*5*[dict get $gui_config height]}]
         }
     }
 
-    proc gui_get_sorted_section_list {} { return [section_list] }
+
+    
+
+	proc gui_add_info_bar {parent id} {
+        
+       	proc get_color {idx} {
+
+            proc fraction_to_uint8 {value} {
+                set value [expr {round($value * 255)}]
+                expr {$value > 255 ? 255 : $value < 0 ? 0 : $value}
+            }
+            
+            set h [expr $idx / 7.]
+            set y [expr 0.33 + 0.33 * ($idx % 2) ]
+            set a 1
+        
+            proc gui_yuva {y u v a} {
+                
+                
+                set r [fraction_to_uint8 [expr {$y + 1.28033 * 0.615 * $v}]]
+                set g [fraction_to_uint8 [expr {$y - 0.21482 * 0.436 * $u - 0.38059 * 0.615 * $v}]]
+                set b [fraction_to_uint8 [expr {$y + 2.12798 * 0.436 * $u}]]
+                set a [fraction_to_uint8 $a]
+                expr {$r << 24 | $g << 16 | $b << 8 | $a}
+            }        
+            
+            set h [expr {($h - floor($h)) * 8.0}]
+            gui_yuva $y [expr {$h < 2.0 ? -1.0 : $h < 4.0 ? $h - 3.0 : $h < 6.0 ? 1.0 : 7.0 - $h}] \
+                        [expr {$h < 2.0 ? $h - 1.0 : $h < 4.0 ? 1.0 : $h < 6.0 ? 5.0 - $h : -1.0}] $a
+        }
+
+
+
+        variable gui_config
+        if {[dict exists $gui_config section_color $id]} {
+            set color_idx [dict get $gui_config section_color $id]
+        } else {
+            set color_idx [dict get $gui_config next_color]
+            dict incr gui_config next_color
+            dict set gui_config section_color $id $color_idx
+        }            
+            
+        set w [dict get $gui_config width]
+        set w [dict get $gui_config width]
+        set h [dict get $gui_config height]
+        set fs [dict get $gui_config font_sans]
+        set fm [dict get $gui_config font_mono]
+        osd create rectangle $parent.$id -x 0 -y [expr -2*$h] -w $w -h $h -clip true -rgba 0x00000088
+        osd create rectangle $parent.$id.bar -x 0 -y 0 -w 0 -h $h -rgba [get_color $color_idx]
+                
+        osd create rectangle $parent.$id.favorite -x [expr 0*$h] -h $h -w $h -rgba 0x00000000
+        osd create text $parent.$id.favorite.text -x [expr 0.125*$h] -y [expr  0.125*$h/6.] -size [expr 5*$h/6] -rgba 0xffffffff -font $fs  -text "\u2606"
+        gui_add_button $parent.$id.favorite \
+            "eval { osd configure $parent.$id.favorite -rgba 0xFFFFFF40 } " \
+            "eval { osd configure $parent.$id.favorite -rgba 0xFFFFFF00 } " \
+            "variable gui_config
+            if {\[dict exist \$gui_config favorite_sections $id]} {
+                dict unset gui_config favorite_sections $id
+            } else {
+                dict set gui_config favorite_sections $id 1
+            }" \
+            "variable gui_config
+            if {\[dict exist \$gui_config favorite_sections $id]} {
+                osd configure $parent.$id.favorite.text -text \"\\u2605\"
+            } else {
+                osd configure $parent.$id.favorite.text -text \"\\u2606\"
+            }
+            set target \[expr \[dict get \$gui_config $parent.ordering $id]*\[dict get \$gui_config height]]
+            osd configure $parent.$id -y \[expr {0.85*\[osd info $parent.$id -y]+0.15*\$target}]
+            " \
+            "Add/Remove $id to the favorites list" 
+
+
+        osd create rectangle $parent.$id.select -x [expr 1*$h] -h $h -w $h -rgba 0x00000000
+        osd create text $parent.$id.select.text -x [expr 0.125*$h] -y [expr -0.125*$h/6.] -size [expr 5*$h/6] -rgba 0xffffffff -font $fs  -text "\u25CE"
+        gui_add_button $parent.$id.select \
+            "osd configure $parent.$id.select -rgba 0xFFFFFF40 " \
+            "osd configure $parent.$id.select -rgba 0xFFFFFF00 " \
+            "eval { 
+            variable gui_config
+            dict set gui_config selected_section \"$id\" 
+            } " \
+            "eval { 
+            variable gui_config                        
+            if { \[dict get \$gui_config selected_section] == \"$id\" } {
+                osd configure $parent.$id.select.text -text \"\\u25C9\"
+            } else {
+                osd configure $parent.$id.select.text -text \"\\u25CE\"
+            } }" \
+            "Select $id to be analized in detail" 
+
+        osd create rectangle $parent.$id.avg -x [expr 2*$h] -h $h -w [expr 5*$h] -rgba 0x00000000
+        osd create text $parent.$id.avg.text -x [expr 0.125*$h] -y [expr 0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fm
+        gui_add_button $parent.$id.avg "" "" "" \
+            "variable sections
+            set section_time_avg \[dict get \$sections $id section_time_avg]
+            osd configure $parent.$id.avg.text -text \[format \"avg:%s\" \[gui_to_unit \$section_time_avg]]
+            proc clamp01 {val} { set v \[expr \$val]; return \[expr \$v<0?0:\$v>1?1:\$v] }
+            osd configure $parent.$id.bar -w \[expr \[osd info $parent.$id -w]*\[clamp01 \$section_time_avg/\[get_VDP_frame_duration]]] " \
+            "Average duration of section: $id" 
+        
+        osd create rectangle $parent.$id.max -x [expr 7*$h] -h $h -w [expr 5*$h] -rgba 0x00000000
+        osd create text $parent.$id.max.text -x [expr 0.125*$h] -y [expr 0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fm
+        gui_add_button $parent.$id.max \
+            "osd configure $parent.$id.select -rgba 0xFFFFFF40 " \
+            "osd configure $parent.$id.select -rgba 0xFFFFFF00 " \
+            "variable sections \n dict set sections $id section_time_max 0" \
+            "variable sections
+            osd configure $parent.$id.max.text -text \[format \"max:%s\" \[gui_to_unit \[dict get \$sections $id section_time_max]]]" \
+            "Maximum duration of section: $id
+            Click to reset." 
+
+        osd create text $parent.$id.name     -x [expr 12*$h] -y [expr   0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fs -text $id
+                        
+    }
 
 	proc gui_update {} {
         
@@ -662,73 +782,45 @@ namespace eval profile {
 #            puts stderr [dict get $button upkeep] 
             eval [dict get $button upkeep] 
         }
+        
+        proc sort_sections {ids} {
+        
+            variable gui_config
+            if {[dict get $gui_config sorting_criteria] == "avg"} {
+                proc compare {a b} {
+                    variable sections
+                    set a0 [dict get $sections $a section_time_avg]
+                    set b0 [dict get $sections $b section_time_avg]
+                    if {$a0 > $b0} { return -1 } elseif {$a0 < $b0} { return 1 }
+                    return [string compare $b $a]
+                }
+                set ids [lsort -command compare $ids]
+            }
+            return $ids
+        }
 
+
+        variable sections
         variable gui_config
         set idx 0
-        set idxf 0
-        
-        
-        foreach id [gui_get_sorted_section_list] {
-			dict with sections $id {
-                upvar idx idx
-
-                set frame_time [expr {(1368.0 * (([vdpreg 9] & 2) ? 313 : 262)) / (6 * 3579545)}]
-                set idx [expr 1+$idx]
-
-                if {![osd exists profile.all.$id]} {
-
-                    variable gui_config
-                    set w [dict get $gui_config width]
-                    set h [dict get $gui_config height]
-                    set fs [dict get $gui_config font_sans]
-                    set fm [dict get $gui_config font_mono]
-                    set rgba [gui_hya [expr {$idx * 0.14}] 0.5 1.0]
-                    osd create rectangle profile.all.$id -x 0 -y [expr $idx*$h] -w $w -h $h -clip true -rgba 0x00000088
-                    osd create rectangle profile.all.$id.bar -x 0 -y 0 -w 0 -h $h -rgba $rgba
-                    osd create text profile.all.$id.remove -x [expr  0*$h] -y [expr  0.25*$h/6.] -size [expr 5*$h/6] -rgba 0xffffffff -font $fs
-                    osd create text profile.all.$id.break  -x [expr  1*$h] -y [expr  0.25*$h/6.] -size [expr 5*$h/6] -rgba 0xffffffff -font $fs
-                    osd create text profile.all.$id.select -x [expr  2*$h] -y [expr -0.25*$h/6.] -size [expr 5*$h/6] -rgba 0xffffffff -font $fs
-                    osd create text profile.all.$id.avg    -x [expr  3*$h] -y [expr   0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fm
-                    osd create text profile.all.$id.max    -x [expr  8*$h] -y [expr   0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fm
-                    osd create text profile.all.$id.name   -x [expr 13*$h] -y [expr   0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fs
-
-                    osd configure profile.all.$id.remove -text "\u2718"
-                }
-
-                proc clamp01 {val} { set v [expr $val]; return [expr $v<0?0:$v>1?1:$v] }
-                
-                osd configure profile.all.$id.bar -w [expr [clamp01 $section_time_avg/$frame_time]*[osd info profile.all.$id -w]]
-
-                osd configure profile.all.$id.break -text [expr {$break?"\u2611":"\u2610"}]
-                osd configure profile.all.$id.select -text [expr {$idx==0?"\u25C9":"\u25CE"}]
-                osd configure profile.all.$id.avg -text [format "avg:%s" [gui_to_unit $section_time_avg]]
-                osd configure profile.all.$id.max -text [format "max:%s" [gui_to_unit $section_time_max]]
-                osd configure profile.all.$id.name -text $id
+        foreach id [sort_sections [dict keys $sections]] {
+            set idx [expr 1+$idx]
+            dict set gui_config profile.all.ordering $id $idx
+            dict set gui_config profile.favorite.ordering $id -5
+            if {![osd exists profile.all.$id]} { 
+                gui_add_info_bar profile.all $id
+                gui_add_info_bar profile.favorite $id
             }
         }
-        dict set gui_config num_monitored_sections $idx
-        
-	}
+        dict set gui_config num_sections $idx
 
-	proc gui_hya {h y a} {
+        set idx 0
+        foreach id [sort_sections [dict keys [dict get $gui_config favorite_sections]]] {
+            set idx [expr 1+$idx]
+            dict set gui_config profile.favorite.ordering $id $idx
+        }
+        dict set gui_config num_favorite_sections $idx        
         
-        proc gui_yuva {y u v a} {
-            
-            proc fraction_to_uint8 {value} {
-                set value [expr {round($value * 255)}]
-                expr {$value > 255 ? 255 : $value < 0 ? 0 : $value}
-            }
-            
-            set r [fraction_to_uint8 [expr {$y + 1.28033 * 0.615 * $v}]]
-            set g [fraction_to_uint8 [expr {$y - 0.21482 * 0.436 * $u - 0.38059 * 0.615 * $v}]]
-            set b [fraction_to_uint8 [expr {$y + 2.12798 * 0.436 * $u}]]
-            set a [fraction_to_uint8 $a]
-            expr {$r << 24 | $g << 16 | $b << 8 | $a}
-        }        
-        
-		set h [expr {($h - floor($h)) * 8.0}]
-		gui_yuva $y [expr {$h < 2.0 ? -1.0 : $h < 4.0 ? $h - 3.0 : $h < 6.0 ? 1.0 : 7.0 - $h}] \
-		            [expr {$h < 2.0 ? $h - 1.0 : $h < 4.0 ? 1.0 : $h < 6.0 ? 5.0 - $h : -1.0}] $a
 	}
 
 
@@ -746,8 +838,7 @@ namespace eval profile {
         } elseif {$unit eq "lines"} {
             return [format "%5.1f lines" [expr {$seconds * 3579545 / 228}]]
         } else {
-            set frame_time [expr {(1368.0 * (([vdpreg 9] & 2) ? 313 : 262)) / (6 * 3579545)}]
-            return [format "%5.1f%%" [expr 100 * $seconds / $frame_time]]
+            return [format "%5.1f%%" [expr 100 * $seconds / [get_VDP_frame_duration]]]
         }
     }
 
