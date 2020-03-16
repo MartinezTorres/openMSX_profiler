@@ -35,7 +35,6 @@
 namespace eval profile {
 
     variable config [dict create \
-        last_updated 0 \
         buttons [dict create] \
         width 150 \
         height 6 \
@@ -57,17 +56,39 @@ namespace eval profile {
         ]
                     
 	variable sections [dict create]
-    
-	variable frame_start_time 0
-    
-    variable last_event_time 0
+        
+	variable irq_status 0
+
+    variable z80_interface_enabled 0
+    variable z80_self_estimation_time_unit [expr 1 / 6000]
+    variable z80_self_estimation_time 0
+    variable z80_section_name_address 0xF931
 
     proc init {} {
         
         variable sections
         if {[dict exists $sections irq]} {return}
         
-        section_init_frame_and_irq        
+        section_create "irq"
+        
+        set begin [namespace code "
+            variable \$irq_status; 
+            set irq_status 1
+            section_begin irq;
+        "]
+        set end [namespace code "
+            variable irq_status
+            set irq_status 0
+            section_end irq
+        "]
+        debug set_bp 56 {} "
+            $begin
+            debug set_watchpoint read_mem -once \[reg sp] {} {
+                debug set_condition -once {} {
+                    $end
+                }
+            }"
+            
         section_vdp_bp "vdp"
     }
     
@@ -104,10 +125,6 @@ namespace eval profile {
 # Z80 interface:
 #
 
-    variable z80_interface_enabled 0
-    variable z80_self_estimation_time_unit [expr 1 / 6000]
-    variable z80_self_estimation_time 0
-    variable z80_section_name_address 0xF931
 
 	set_help_text profile::get_debug_string [join {
 		"Usage: profile::get_debug_string <address>\n"
@@ -173,42 +190,6 @@ namespace eval profile {
         set z80_self_estimation_time_unit $time_unit
     }
 
-# 
-# IRQ interface:
-#
-
-	variable irq_status 0
-    
-	proc section_init_frame_and_irq {} {
-        
-		section_create "irq"
-		section_create "frame"
-        
-		set begin [namespace code "variable \$irq_status; incr \$irq_status;  section_end frame; section_begin frame; section_begin irq"]
-		set end [namespace code "section_end irq; variable irq_status; if {\$irq_status>0} { incr \$irq_status -1 }"]
-		set handler "$begin\ndebug set_watchpoint read_mem -once \[expr {\[reg sp] - 2}] {} {debug set_condition -once {} {$end}}"
-		debug probe set_bp z80.acceptIRQ {} $handler
-		if {{r800.acceptIRQ} in [debug probe list]} {
-			debug probe set_bp r800.acceptIRQ {} $handler
-		}
-	}
-    
-	set_help_text profile::section_irq_bp [join {
-		"Usage: profile::section_irq_bp <ids> \[<condition>]\n"
-		"Define a probe breakpoint which starts a section when the CPU accepts "
-		"an IRQ, and ends it after the return address on the stack is read, "
-		"typically when it returns. Useful for profiling interrupt handlers."
-	} {}]
-	proc section_irq_bp {ids {condition {}}} {
-		section_create $ids
-		set begin [namespace code "variable \$irq_status; incr \$irq_status; section_begin {$ids}"]
-		set end [namespace code "section_end {$ids}; variable irq_status; if {\$irq_status>0} { incr \$irq_status -1 }"]
-		set handler "$begin\ndebug set_watchpoint read_mem -once \[expr {\[reg sp] - 2}] {} {debug set_condition -once {} {$end}}"
-		debug probe set_bp z80.acceptIRQ $condition $handler
-		if {{r800.acceptIRQ} in [debug probe list]} {
-			debug probe set_bp r800.acceptIRQ $condition $handler
-		}
-	}
 
 # 
 # VDP interface:
@@ -298,13 +279,17 @@ namespace eval profile {
 					section_time_avg 0 \
 					section_time_max 0 \
 					section_time_exp 0 \
-                    start_time 0 \
+                    last_log_ts_begin 0 \
+                    last_log_ts_end 0 \
+                    last_log [list] \
+                    current_log_ts_begin 0 \
+                    current_log [list] \
 					break false \
 				]
+                init
 			}
 		}
 
-        init
 	}
 
 	set_help_text profile::section_list [join {
@@ -321,19 +306,6 @@ namespace eval profile {
 		return $ids
 	}
 
-	set_help_text profile::section_with [join {
-		"Usage: profile::section_with <ids> <body>\n"
-		"Iterate over the specified sections, passed in scope of the body."
-	} {}]
-	proc section_with {ids body} {
-		variable sections
-		foreach id $ids {
-			dict with sections $id {
-				eval $body
-			}
-		}
-	}
-
 	set_help_text profile::section_begin [join {
 		"Usage: profile::section_begin <ids>\n"
 		"Starts a section. Use the “frame” ID to mark the beginning of a frame."
@@ -342,11 +314,18 @@ namespace eval profile {
         
         section_create $ids
 
-        variable last_event_time
-		set last_event_time [machine_info time]
-
         foreach id $ids {
+
             variable sections
+
+            if {[dict get $sections $id balance]==0} {
+                foreach sub_id [dict keys $sections] {
+                    if {[dict get $sections $sub_id balance]>0} {
+                        dict with sections $sub_id { lappend current_log $id begin [machine_info time] }
+                    }
+                }
+            }
+
             dict with sections $id { 
                 variable irq_status
                 set in_irq $irq_status
@@ -354,7 +333,7 @@ namespace eval profile {
                 incr balance
 
                 if {$balance == 1} {
-                    set start_time $last_event_time
+                    set current_log_ts_begin [machine_info time]
                 }                
                 
                 if {$break} {
@@ -372,30 +351,47 @@ namespace eval profile {
 	} {}]
 	proc section_end {ids} {
         
-        variable last_event_time
-        set last_event_time [machine_info time]
 
 		foreach id $ids {
             variable sections
+
+            if {[dict get $sections $id balance]==1} {
+                foreach sub_id [dict keys $sections] {
+                    if {$id!=$sub_id && [dict get $sections $sub_id balance]>0} {
+                        dict with sections $sub_id { lappend current_log $id end [machine_info time] }
+                    }
+                }
+            }            
+
             dict with sections $id { 
 
                 variable z80_self_estimation_time_unit
                 variable z80_self_estimation_time
+
+                set current_log_ts_end [machine_info time]
                 
                 set frame_total_time [get_VDP_frame_duration]
 
-                if {$balance == 1} {
-                    
-                    variable config
-                    set avg_ratio [dict get $config avg_ratio]
-                    set section_time [expr {$last_event_time - $start_time}]
-                    set section_time_max [expr {$section_time>$section_time_max?$section_time:$section_time_max}]
-                    set section_time_avg [expr {$section_time_avg == 0 ? $section_time : $section_time_avg * (1-1./$avg_ratio) + $section_time / $avg_ratio}]
-                    set section_time_exp [expr {$z80_self_estimation_time_unit != 0 ? 0.01 * $z80_self_estimation_time * $z80_self_estimation_time_unit : 0}]                    
-                }
 
                 if {$balance > 0} {
                     incr balance -1
+
+                    if {$balance == 0} {
+                        
+                        variable config
+                        set avg_ratio [dict get $config avg_ratio]
+                        set ts_begin $current_log_ts_begin
+                        set ts_end $current_log_ts_end
+                        set section_time [expr {$ts_end - $ts_begin}]
+                        set section_time_max [expr {$section_time>$section_time_max?$section_time:$section_time_max}]
+                        set section_time_avg [expr {$section_time_avg == 0 ? $section_time : $section_time_avg * (1-1./$avg_ratio) + $section_time / $avg_ratio}]
+                        set section_time_exp [expr {$z80_self_estimation_time_unit != 0 ? 0.01 * $z80_self_estimation_time * $z80_self_estimation_time_unit : 0}]                    
+                        
+                        set last_log_ts_begin $current_log_ts_begin
+                        set last_log_ts_end   $current_log_ts_end
+                        set last_log $current_log
+                        set current_log [list]
+                    }
                 }
             }
 		}
@@ -549,9 +545,9 @@ namespace eval profile {
         add_scroll_button profile "\u25BA" "\u25C4" {
             set w [dict get $config width]
             set h [dict get $config height]
-            osd configure profile -x [expr {[osd info profile -x] * 0.8 + (-$w+$h)*0.2}] 
+            osd configure profile -x [expr {0.6*[osd info profile -x]+0.4*(-$w+$h)}] 
         } { 
-            osd configure profile -x [expr {[osd info profile -x] * 0.8 + 0 * 0.2}] 
+            osd configure profile -x [expr {0.6*[osd info profile -x]+0.4*0}] 
         }
             
         #
@@ -561,9 +557,9 @@ namespace eval profile {
             -text "Configuration"
 
         add_scroll_button profile.config "\u25BC" "\u25B2" {
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*[dict get $config height]}]
+            osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*[dict get $config height]}]
         } { 
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*5*[dict get $config height]}]
+            osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*5*[dict get $config height]}]
         }
             
         
@@ -596,10 +592,10 @@ namespace eval profile {
 
         add_scroll_button profile.all "\u25BC" "\u25B2" {
             osd configure profile.all -y [expr {[osd info profile.config -y] + [osd info profile.config -h]}]                
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*[dict get $config height]}]
+            osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*[dict get $config height]}]
         } { 
             osd configure $parent -y [expr {[osd info profile.config -y] + [osd info profile.config -h]}]                
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*(1+[dict get $config num_sections])*[dict get $config height]}]
+            osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*(1+[dict get $config num_sections])*[dict get $config height]}]
         }
 
         #
@@ -610,29 +606,11 @@ namespace eval profile {
 
         add_scroll_button profile.favorite "\u25BC" "\u25B2" {
             osd configure $parent -y [expr {[osd info profile.all -y] + [osd info profile.all -h]}]                
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*[dict get $config height]}]
+            osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*[dict get $config height]}]
         } { 
             osd configure $parent -y [expr {[osd info profile.all -y] + [osd info profile.all -h]}]                
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*(1+[dict get $config num_favorite_sections])*[dict get $config height]}]
+            osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*(1+[dict get $config num_favorite_sections])*[dict get $config height]}]
         }
-        
-        #
-        # Section: Usage and Timeline
-        osd create rectangle profile.detailed -w $w -h [expr 1*$h] -clip true -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x00000088
-        osd create text      profile.detailed.text -x 0 -y [expr 0.5*$h/6] -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $config font_sans] \
-            -text "Usage and Timeline:"
-
-        add_scroll_button profile.detailed "\u25BC" "\u25B2" {
-            osd configure $parent -y [expr {[osd info profile.favorite -y] + [osd info profile.favorite -h]}]                
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*[dict get $config height]}]
-        } { 
-            osd configure $parent -y [expr {[osd info profile.favorite -y] + [osd info profile.favorite -h]}]                
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*(5+[dict get $config num_sections_in_usage])*[dict get $config height]}]
-        }
-        
-        osd create rectangle profile.detailed.timeline_cpu -y [expr 1.*$h] -w $w -h [expr 2.*$h] -clip true
-        osd create rectangle profile.detailed.timeline_vdp -y [expr 3.*$h] -w $w -h [expr 2.*$h] -clip true
-        osd create rectangle profile.detailed.usage -y [expr 5.*$h] -w $w -relh 1 -clip true -rgba 0x00000088
         
         
         #
@@ -642,13 +620,30 @@ namespace eval profile {
             -text "Information:"
 
         add_scroll_button profile.info "\u25BC" "\u25B2" {
-            osd configure $parent -y [expr {[osd info profile.detailed -y] + [osd info profile.detailed -h]}]                
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*[dict get $config height]}]
+            osd configure $parent -y [expr {[osd info profile.favorite -y] + [osd info profile.favorite -h]}]                
+            osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*[dict get $config height]}]
         } { 
-            osd configure $parent -y [expr {[osd info profile.detailed -y] + [osd info profile.detailed -h]}]                
-            osd configure $parent -h [expr {0.8*[osd info $parent -h]+0.2*5*[dict get $config height]}]
+            osd configure $parent -y [expr {[osd info profile.favorite -y] + [osd info profile.favorite -h]}]                
+            osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*5*[dict get $config height]}]
+        }
+
+        #
+        # Section: Usage and Timeline
+        osd create rectangle profile.detailed -w $w -h [expr 1*$h] -clip true -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x00000088
+        osd create text      profile.detailed.text -x 0 -y [expr 0.5*$h/6] -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $config font_sans] \
+            -text "Usage and Timeline:"
+
+        add_scroll_button profile.detailed "\u25BC" "\u25B2" {
+            osd configure $parent -y [expr {[osd info profile.info -y] + [osd info profile.info -h]}]                
+            osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*[dict get $config height]}]
+        } { 
+            osd configure $parent -y [expr {[osd info profile.info -y] + [osd info profile.info -h]}]                
+            osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*(5+[dict get $config num_sections_in_usage])*[dict get $config height]}]
         }
         
+        osd create rectangle profile.detailed.timeline_cpu -y [expr 1.*$h] -w $w -h [expr 2.*$h] -clip true
+        osd create rectangle profile.detailed.timeline_vdp -y [expr 3.*$h] -w $w -h [expr 2.*$h] -clip true
+        osd create rectangle profile.detailed.usage -y [expr 5.*$h] -w $w -relh 1 -clip true -rgba 0x00000088        
         gui_update
     }
 
@@ -669,7 +664,7 @@ namespace eval profile {
         }
         
         set h [expr $idx / 7.]
-        set y [expr 0.33 + 0.33 * ($idx % 2) ]
+        set y [expr 0.20 + 0.2 * ($idx % 2) ]
         set a 1
     
         proc gui_yuva {y u v a} {
@@ -715,7 +710,7 @@ namespace eval profile {
                 osd configure $parent.$id.favorite.text -text \"\\u2606\"
             }
             set target \[expr \[dict get \$config $parent.ordering $id]*\[dict get \$config height]]
-            osd configure $parent.$id -y \[expr {0.85*\[osd info $parent.$id -y]+0.15*\$target}]
+            osd configure $parent.$id -y \[expr {0.6*\[osd info $parent.$id -y]+0.4*\$target}]
             " \
             "Add/Remove $id to the favorites list" 
 
@@ -728,6 +723,7 @@ namespace eval profile {
             "eval { 
             variable config
             dict set config selected_section \"$id\" 
+            gui_update_details \"$id\"
             } " \
             "eval { 
             variable config                        
@@ -751,8 +747,8 @@ namespace eval profile {
         osd create rectangle $parent.$id.max -x [expr 7*$h] -h $h -w [expr 5*$h] -rgba 0x00000000
         osd create text $parent.$id.max.text -x [expr 0.125*$h] -y [expr 0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fm
         gui_add_button $parent.$id.max \
-            "osd configure $parent.$id.select -rgba 0xFFFFFF40 " \
-            "osd configure $parent.$id.select -rgba 0xFFFFFF00 " \
+            "osd configure $parent.$id.max -rgba 0xFFFFFF40 " \
+            "osd configure $parent.$id.max -rgba 0xFFFFFF00 " \
             "variable sections \n dict set sections $id section_time_max 0" \
             "variable sections
             osd configure $parent.$id.max.text -text \[format \"max:%s\" \[gui_to_unit \[dict get \$sections $id section_time_max]]]" \
@@ -775,62 +771,82 @@ namespace eval profile {
         osd destroy profile.detailed.timeline_vdp
         osd destroy profile.detailed.usage
 
-        foreach button [dict keys [dict $config buttons] profile.detailed.*] { dict unset config buttons $button }
+        foreach button [dict keys [dict get $config buttons] profile.detailed.{*}] { dict unset config buttons $button }
 
         osd create rectangle profile.detailed.timeline_cpu -y [expr 1.*$h] -w $w -h [expr 2.*$h] -clip true
         osd create rectangle profile.detailed.timeline_vdp -y [expr 3.*$h] -w $w -h [expr 2.*$h] -clip true
-        osd create rectangle profile.detailed.usage -y [expr 5.*$h] -w $w -relh 1 -clip true -rgba 0x00000088        
+        osd create rectangle profile.detailed.usage -y [expr 5.*$h] -w $w -relh 1 -clip true -rgba 0x00000088       
         if {[dict exists $sections $id]} {
             
-            set sectionID [dict get $config selected_section]
-            set section [dict get $sections $sectionID]
+            osd configure profile.detailed.text -text [format "Usage and Timeline: %s" $id]
+            osd configure profile.info.text -text [format "Information: %s" $id]
+            
 
-            osd configure profile.detailed.text -text [format "Usage and Timeline: %s" $sectionID]
-            osd configure profile.info.text -text [format "Information: %s" $sectionID]
-
-            if {[dict exists $section last_invocation_log]} {
+            if {[dict exists $sections $id last_log]} {
                 
-                set ts_start_parent
-                set ts_end_parent
+                set ts_begin_parent [dict get $sections $id last_log_ts_begin]
+                set ts_end_parent [dict get $sections $id last_log_ts_end]
+                set td_parent [expr {$ts_end_parent-$ts_begin_parent}]
+                puts stderr [format "Parent: %s %7.5f" $id $td_parent]
                 set idx 0
                 set depth_level 0
-                set max_level 0
                 set subsections [dict create]
-                foreach id $type $timestamp [dict exists $section last_invocation_log] {
-                    if {![dict exists $subsections $id]} {
-                        dict set subsections $id [dict create \
+
+                foreach {sub_id type timestamp} [dict get $sections $id last_log] {
+
+                    if {![dict exists $subsections $sub_id]} {
+                        dict set subsections $sub_id [dict create \
                             num_invocations 0 \
                             total_time 0.0 \
-                            start 0.0 \
-                            depth_level 0 \
+                            ts_begin 0.0 \
+                            depth $depth_level \
                         ]
+                        incr depth_level
                     }
                     
-                    if {$type=="start"} {
-                        dict incr subsections $id num_invocations
-                        dict set subsections $id start $timestamp
-                        dict set subsections $id depth_level $depth_level
-                        incr depth_level
-                        set max_level [expr max($max_level,$depth_level)]
-                    } elseif {$type=="end"} {
+                    if {$type=="begin"} {                        
+                        dict with subsections $sub_id { incr num_invocations }
+                        dict set  subsections $sub_id ts_begin $timestamp
                         
-                        set ts_start [dict get subsections $id start $timestamp]
-                        set ts_end $timestamp                        
-                        dict incr subsections $id total_time [expr $ts_end-$ts_start]
-                        incr depth_level -1
+                    } elseif {$type=="end"} {                        
+                        set  ts_begin [dict get $subsections $sub_id ts_begin]
+                        set  ts_end $timestamp
+                        set  td [expr $ts_end-$ts_begin]
+                        puts stderr [format "Sub: %s %7.5f" $sub_id $td_parent]
+                                                
+                        dict with subsections $sub_id { set total_time [expr $total_time+$ts_end-$ts_begin]}
 
                         incr idx
                         set timeline_bar_name [format "profile.detailed.timeline_cpu.bar%03d" $idx]
-                        osd create rectangle $profile_bar_name -x 0 -y 0 -w 0 -h [expr 2*$h] -rgba [gui_get_color $id]
-                        osd configure $profile_bar_name -x [expr $w*($ts_start-$ts_start_parent)/($ts_end_parent-$ts_start_parent)]
-                        osd configure $profile_bar_name -w [expr $w*($ts_end-$ts_start)/($ts_end_parent-$ts_start_parent)]
+                        osd create rectangle $timeline_bar_name -x 0 -y 0 -w 0 -h [expr 2*$h] -rgba [gui_get_color $sub_id]
+                        puts stderr [format "w: %s %s %s %s" $ts_end $ts_begin $td_parent ($ts_end-$ts_begin)]
+                        osd configure $timeline_bar_name -x [expr $w*($ts_begin-$ts_begin_parent)/$td_parent]
+                        osd configure $timeline_bar_name -w [expr $w*($ts_end-$ts_begin)/$td_parent]
 
                         set usage_bar_name [format "profile.detailed.usage.bar%03d" $idx]
-                        osd create rectangle $usage_bar_name -x 0 -y [expr $depth_level*$h] -w 0 -h [expr 1*$h] -rgba [gui_get_color $id]
-                        osd configure $usage_bar_name -x [expr $w*($ts_start-$ts_start_parent)/($ts_end_parent-$ts_start_parent)]
-                        osd configure $usage_bar_name -w [expr $w*($ts_end-$ts_start)/($ts_end_parent-$ts_start_parent)]
+                        osd create rectangle $usage_bar_name -x 0 -y [expr [dict get $subsections $sub_id depth]*$h] -w 0 -h [expr 1*$h] -rgba [gui_get_color $sub_id]
+                        osd configure $usage_bar_name -x [expr $w*($ts_begin-$ts_begin_parent)/$td_parent]
+                        osd configure $usage_bar_name -w [expr $w*($ts_end-$ts_begin)/$td_parent]
                     }
                 }
+                
+                set idx 0
+                dict for {sub_id subsection}  $subsections {
+                    incr idx
+                    set usage_text_time [format "profile.detailed.usage.time%03d" $idx]
+                    osd create text $usage_text_time -x [expr 0.125*$h] -y [expr (0.5/6 + [dict get $subsections $sub_id depth])*$h] \
+                        -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $config font_mono] \
+                        -text [format "T:%s" [gui_to_unit [dict get $subsections $sub_id total_time]]]
+
+                    set usage_text_name [format "profile.detailed.usage.name%03d" $idx]
+                    osd create text $usage_text_name -x [expr 4.125*$h] -y [expr (0.5/6 + [dict get $subsections $sub_id depth])*$h] \
+                        -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $config font_sans] \
+                        -text $sub_id
+                        
+                }
+                
+            
+                dict set config num_sections_in_usage $depth_level
             }
         }
     }
@@ -889,7 +905,7 @@ namespace eval profile {
         }
         dict set config num_favorite_sections $idx        
 	
-        after "40" profile::gui_update
+        after "20" profile::gui_update
     }
     
 
@@ -936,11 +952,15 @@ namespace eval profile {
 		"Breaks execution at the start of the section."
 	} {}]
 	proc profile_break {ids} {
-		section_with $ids {
-			set break true
-			debug cont
+        variable sections
+		foreach id $ids {
+			dict with sections $id {
+                set break true
+                debug cont
+			}
 		}
 	}
+    
 	proc profile_break_tab {args} {
 		if {[llength $args] == 2} { return [section_list] }
 	}
