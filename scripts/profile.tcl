@@ -64,6 +64,10 @@ namespace eval profile {
     variable z80_self_estimation_time 0
     variable z80_section_name_address 0xF931
 
+#
+# INIT:
+#
+
     proc init {} {
         
         variable sections
@@ -76,6 +80,8 @@ namespace eval profile {
             set irq_status 1
             section_begin irq;
         "]
+        
+        puts stderr $begin
         set end [namespace code "
             variable irq_status
             set irq_status 0
@@ -251,6 +257,59 @@ namespace eval profile {
 			"$begin\ndebug set_watchpoint read_mem -once \[reg sp] {} {debug set_condition -once {} {$end}}"
 	}
 
+    
+
+    proc is_call {} {
+        # call        0xCD
+        # call <cc>   0xC4,0xCC,0xD4,..,0xFC
+        set instr [peek8 [reg pc]]
+        expr {($instr         == 0xCD) ||
+             (($instr & 0xC7) == 0xC4)}
+    }
+
+    proc is_ret {} {
+        # ret        0xC9
+        # ret <cc>   0xC0,0xC8,0xD0,..,0xF8
+        set instr [peek8 [reg pc]]
+        expr {($instr         == 0xC9) ||
+             (($instr & 0xC7) == 0xC0)}
+    }
+
+    variable autoscope_scopes [dict create]
+    variable autoscope_call_bp
+    variable autoscope_ret_bp
+    
+   
+	proc section_all_scope_bp {} {
+
+        variable autoscope_scopes
+        variable autoscope_call_bp
+        set autoscope_call_bp [
+            debug set_condition {[profile::is_call]} {
+
+                set address [reg pc]
+                variable profile::autoscope_scopes autoscope_scopes
+                dict set autoscope_scopes $address [machine_info time]                
+            }
+        ]
+
+        variable autoscope_ret_bp
+        set autoscope_ret_bp [
+            debug set_condition {[profile::is_ret]} {
+
+                set address [expr [peek16 [reg sp]]-3]
+                set id [format "0x%04x" [peek16 [expr [peek16 [reg sp]]-2]]]
+                variable profile::autoscope_scopes autoscope_scopes
+                if [dict exists $autoscope_scopes $address] {
+                    
+                    profile::section_create $id
+                    profile::section_begin $id [dict get $autoscope_scopes $address]
+                    profile::section_end $id
+                }
+            }
+        ]
+    }
+
 
 # 
 # Internal interface:
@@ -310,7 +369,9 @@ namespace eval profile {
 		"Usage: profile::section_begin <ids>\n"
 		"Starts a section. Use the “frame” ID to mark the beginning of a frame."
 	} {}]
-	proc section_begin {ids} {
+	proc section_begin {ids {ts_begin {}} } {
+        
+        if {$ts_begin==""} {set ts_begin [machine_info time]}
         
         section_create $ids
 
@@ -321,7 +382,7 @@ namespace eval profile {
             if {[dict get $sections $id balance]==0} {
                 foreach sub_id [dict keys $sections] {
                     if {[dict get $sections $sub_id balance]>0} {
-                        dict with sections $sub_id { lappend current_log $id begin [machine_info time] }
+                        dict with sections $sub_id { lappend current_log $id begin $ts_begin }
                     }
                 }
             }
@@ -333,7 +394,7 @@ namespace eval profile {
                 incr balance
 
                 if {$balance == 1} {
-                    set current_log_ts_begin [machine_info time]
+                    set current_log_ts_begin $ts_begin
                 }                
                 
                 if {$break} {
