@@ -102,7 +102,15 @@ namespace eval profile {
         append hash2 [debug read memory $address]
         return [format "%02X%02X%02X" $hash0 $hash1 $hash2]
     }
+    
+    proc quarantine id {
         
+        variable Status
+        dict set Status Tags $id quarantined 1
+        dict for {idx cb_id} [dict get $Status Tags $id debug_cb] { remove_cb $cb_id }
+        dict set Status Tags $id debug_cb [dict create]
+    }
+    
     proc init {} {
 
         variable Status
@@ -174,10 +182,7 @@ namespace eval profile {
                 profile::tag_create $id
                 
                 if {[dict size [dict get $profile::Status Tags $id debug_cb]]>4} {
-                    dict set profile::Status Tags $id quarantined 1
-                    
-                    dict for {idx cb_id} [dict get $profile::Status Tags $id debug_cb] { profile::remove_cb $cb_id }
-                    dict set profile::Status Tags $id debug_cb [dict create]
+                    profile::quarantine $id
                 }
                 
                 if [dict get $profile::Status Tags $id quarantined] { return }
@@ -453,6 +458,7 @@ namespace eval profile {
                 if {$sub_ts_begin < $ts_clean} {
                     dict set Status Tags $sub_id depth 1
                     profile::tag_end $sub_id
+                    quarantine $sub_id
                 }
                 dict set Status Tags $id current_log $log_idx [list begin $sub_id $sub_ts_begin]
                 incr log_idx
