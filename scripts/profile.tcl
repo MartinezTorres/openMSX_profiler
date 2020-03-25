@@ -53,6 +53,7 @@ namespace eval profile {
     variable Status_Tag_default [dict create \
             hash {} \
             debug_cb [dict create] \
+            quarantined 0 \
             alias "" \
             count 0 \
             depth 0 \
@@ -171,6 +172,16 @@ namespace eval profile {
                 set target_address [peek16 [expr {$pc+1}]]
                 set id [format "0x%04x_#%s" $target_address [profile::get_function_hash $target_address]]
                 profile::tag_create $id
+                
+                if {[dict size [dict get $profile::Status Tags $id debug_cb]]>4} {
+                    dict set profile::Status Tags $id quarantined 1
+                    
+                    dict for {idx cb_id} [dict get $profile::Status Tags $id debug_cb] { profile::remove_cb $cb_id }
+                    dict set profile::Status Tags $id debug_cb [dict create]
+                }
+                
+                if [dict get $profile::Status Tags $id quarantined] { return }
+                
                 profile::tag_begin $id
                 profile::tag_add_cb_once $id set_bp [expr {$pc+3}] {} {
                     profile::tag_end $id
@@ -511,8 +522,7 @@ namespace eval profile {
             
             # We remove the tag from the list of active tags
             dict unset Status active_tags $id
-            dict for {idx cb_id} [dict get $Status Tags $id debug_cb] { remove_cb $cb_id }
-            dict set Status Tags $id debug_cb [dict create]
+           
 
             set log_idx [dict get $Status log_idx]
             dict for {sub_id sub_ts_begin} [dict get $Status active_tags] {
