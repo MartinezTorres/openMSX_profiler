@@ -53,7 +53,8 @@ namespace eval profile {
     variable Status_Tag_default [dict create \
             hash {} \
             debug_cb [dict create] \
-            quarantined 0 \
+            profile_level 0 \
+            disabled 0 \
             alias "" \
             count 0 \
             depth 0 \
@@ -103,13 +104,40 @@ namespace eval profile {
         return [format "%02X%02X%02X" $hash0 $hash1 $hash2]
     }
     
-    proc quarantine id {
+    proc disable id {
         
         variable Status
-        dict set Status Tags $id quarantined 1
+        dict set Status Tags $id disabled 1
         dict for {idx cb_id} [dict get $Status Tags $id debug_cb] { remove_cb $cb_id }
         dict set Status Tags $id debug_cb [dict create]
     }
+    
+    proc call_condition pc {
+        
+        set instr [debug read memory $pc]
+        if {$instr == 0xCD} {return 1}
+        set f [debug read "CPU regs" 1]
+        # C4 CALL_NZ 
+        if {$instr == 0xC4} {return [expr ($f & 0x40 == 0)] }
+        # D4 CALL_NC 
+        if {$instr == 0xD4} {return [expr ($f & 0x01 == 0)] }
+        # E4 CALL_PO 
+        if {$instr == 0xE4} {return [expr ($f & 0x04 == 0)] }
+        # F4 CALL_P
+        if {$instr == 0xF4} {return [expr ($f & 0x80 == 0)] }
+        # CC CALL_Z
+        if {$instr == 0xCC} {return [expr ($f & 0x40 != 0)] }
+        # DC CALL_C
+        if {$instr == 0xDC} {return [expr ($f & 0x01 != 0)] }
+        # EC CALL_PE
+        if {$instr == 0xEC} {return [expr ($f & 0x04 != 0)] }
+        # FC CALL_M
+        if {$instr == 0xFC} {return [expr ($f & 0x80 != 0)] }
+        puts stderr [format "Unsupported call 0x%02X" $instr]
+    }
+
+
+    
     
     proc init {} {
 
@@ -120,7 +148,7 @@ namespace eval profile {
             set Status $Status_defaults
             
             tag_create "irq"
-            tag_add_cb "irq" set_bp 56 {} {
+            tag_add_cb "irq" set_bp 0x38 {} {
                 profile::tag_begin "irq"
                 profile::tag_add_cb_once "irq" set_watchpoint read_mem [reg sp] {} {
                     profile::tag_end "irq"
@@ -139,56 +167,57 @@ namespace eval profile {
             add_cb set_condition {[ \
                 set pc [expr {256 * [debug read "CPU regs" 20] + [debug read "CPU regs" 21]}]; \
                 set instr [debug read memory $pc]; \
-                expr {($instr == 0xCD) || (($instr & 0xC7) == 0xC4)} \
+                expr {($instr == 0xCD) || (($instr & 0xC7) == 0xC4) || (($instr & 0xC7) == 0xC7)} \
             ]} {
                 
                 if {![dict get $profile::Status auto_scan]} return
 
                 set pc [expr {256 * [debug read "CPU regs" 20] + [debug read "CPU regs" 21]}]
                 set instr [debug read memory $pc]
-                # Shortcut, avoid checking flags if its a plain call 
-                if {$instr != 0xCD} {  
-                    set opcode [dict get "
-                        C4 CALL_NZ 
-                        D4 CALL_NC 
-                        E4 CALL_PO 
-                        F4 CALL_P
-                        CC CALL_Z
-                        DC CALL_C
-                        EC CALL_PE
-                        FC CALL_M
-                        CD CALL" [format "%02X" $instr]]
-                    
+                if {$instr == 0xCD} {
+
+                    set target_address [peek16 [expr {$pc+1}]]
+                    set return_address [expr {$pc+3}]
+                } elseif {($instr & 0xC7) == 0xC4} {
                     set f [debug read "CPU regs" 1]
-                    set condition 0
-                    switch $opcode {
-                        CALL_NZ { set condition [expr {$f & 0x40 == 0}] }
-                        CALL_NC { set condition [expr {$f & 0x01 == 0}] }
-                        CALL_PO { set condition [expr {$f & 0x04 == 0}] } 
-                        CALL_P  { set condition [expr {$f & 0x80 == 0}] }
-                        CALL_Z  { set condition [expr {$f & 0x40 == 1}] }
-                        CALL_C  { set condition [expr {$f & 0x01 == 1}] }
-                        CALL_PE { set condition [expr {$f & 0x04 == 1}] } 
-                        CALL_M  { set condition [expr {$f & 0x80 == 1}] }
-                        CALL    { set condition 1 }
-                        default { puts stderr "Unsupported call" }
-                    }
-                    #puts  -nonewline stderr "."
-                    if {$condition==0} return
+                    # C4 CALL_NZ 
+                    if       {$instr == 0xC4} { if {$f & 0x40 != 0} {return} 
+                    # D4 CALL_NC 
+                    } elseif {$instr == 0xD4} { if {$f & 0x01 != 0} {return} 
+                    # E4 CALL_PO4
+                    } elseif {$instr == 0xE4} { if {$f & 0x04 != 0} {return} 
+                    # F4 CALL_P
+                    } elseif {$instr == 0xF4} { if {$f & 0x80 != 0} {return} 
+                    # CC CALL_Z
+                    } elseif {$instr == 0xCC} { if {$f & 0x40 == 0} {return} 
+                    # DC CALL_C
+                    } elseif {$instr == 0xDC} { if {$f & 0x01 == 0} {return} 
+                    # EC CALL_PE
+                    } elseif {$instr == 0xEC} { if {$f & 0x04 == 0} {return} 
+                    # FC CALL_M
+                    } elseif {$instr == 0xFC} { if {$f & 0x80 == 0} {return} } 
+                    set target_address [peek16 [expr {$pc+1}]]
+                    set return_address [expr {$pc+3}]
+                } else {
+                    # RST
+                    set target_address [expr {$instr - 0xC7}]
+                    set return_address [expr {$pc+1}]
                 }
+                                
+                #puts  -nonewline stderr "."
                 
-                set target_address [peek16 [expr {$pc+1}]]
                 set id [format "0x%04x_#%s" $target_address [profile::get_function_hash $target_address]]
                 profile::tag_create $id
                 
-                if {[dict size [dict get $profile::Status Tags $id debug_cb]]>4} {
-                    profile::quarantine $id
-                }
+                if {[dict size [dict get $profile::Status Tags $id debug_cb]]>4} { 
+                    puts stderr "Disabling $id"
+                    profile::disable $id 
                 
-                if [dict get $profile::Status Tags $id quarantined] { return }
+                }
+                if [dict get $profile::Status Tags $id disabled] { return }
                 
                 profile::tag_begin $id
-                profile::tag_add_cb_once $id set_bp [expr {$pc+3}] {} {
+                profile::tag_add_cb_once $id set_bp $return_address  {} {
                     profile::tag_end $id
                 }
             }
@@ -450,25 +479,8 @@ namespace eval profile {
         # If the tag that wasn't active gets activated, we register the activation
         if {[dict get $Status Tags $id depth]==0} {
 
-            set ts_begin [machine_info time]
-            set ts_clean [expr {$ts_begin-1.0}]
-            
-            set log_idx [dict get $Status log_idx]
-            dict for {sub_id sub_ts_begin} [dict get $Status active_tags] {
-                if {$sub_ts_begin < $ts_clean} {
-                    dict set Status Tags $sub_id depth 1
-                    profile::tag_end $sub_id
-                    quarantine $sub_id
-                }
-                dict set Status Tags $id current_log $log_idx [list begin $sub_id $sub_ts_begin]
-                incr log_idx
-                dict set Status Tags $sub_id current_log $log_idx [list begin $id $ts_begin]
-                incr log_idx
-            }
-            dict set Status log_idx $log_idx
-            
             # We add the tag to the list of active tags
-            dict set Status active_tags $id $ts_begin
+            dict set Status active_tags $id [machine_info time]
             dict set Status Tags $id depth 1
         } else {
             # We increase the recursion of this tag
@@ -487,13 +499,37 @@ namespace eval profile {
         # If recursion depth reaches zero, the tag deactivation is complete, and metrics get updated.
         if {[dict get $Status Tags $id depth]==1} {
 
+            
             set ts_begin [dict get $Status active_tags $id]
             set ts_end [machine_info time]
             
+            dict set Status Tags $id depth 0
+            dict with Status Tags $id { incr count }
+            dict unset Status active_tags $id
+                            
+            set profile_level [dict get $Status Tags $id profile_level]
+                        
+            if {$profile_level < 1 && $ts_end-$ts_begin < 0.0001} { 
+                
+                return 
+            }
+
+            if {$profile_level < 2 && $ts_end-$ts_begin < 0.0020} { 
+
+                set log_idx [dict get $Status log_idx]
+                dict for {sub_id sub_ts_begin} [dict get $Status active_tags] {
+                    dict set Status Tags $sub_id current_log $log_idx [list $id $ts_begin $ts_end]
+                    incr log_idx
+                }
+                dict set Status log_idx $log_idx
+
+                if {$profile_level < 1} { dict set Status Tags $id profile_level 1}
+                return 
+            }
+
+        
             dict with Status Tags $id { 
 
-                incr count
-                
                 set previous_time_between_invocations [expr $ts_end-$previous_ts_end]
                 
                 set previous_ts_begin $ts_begin
@@ -507,7 +543,7 @@ namespace eval profile {
                     set max_duration $previous_duration
                     set avg_duration $previous_duration
                                               
-                } elseif 0 {                    
+                } else {                    
 
                     set previous_occupation [expr $previous_duration/$previous_time_between_invocations]
 
@@ -526,20 +562,25 @@ namespace eval profile {
                 }
             }
             
-            # We remove the tag from the list of active tags
-            dict unset Status active_tags $id
-           
-
+            set ts_clean [expr {$ts_begin-1.0}]
             set log_idx [dict get $Status log_idx]
             dict for {sub_id sub_ts_begin} [dict get $Status active_tags] {
-                dict set Status Tags $id current_log $log_idx [list end $sub_id $ts_end]
-                incr log_idx
-                dict set Status Tags $sub_id current_log $log_idx [list end $id $ts_end]
-                incr log_idx
+                
+                if {$sub_ts_begin < $ts_clean} {
+                    dict set Status Tags $sub_id depth 1
+                    profile::tag_end $sub_id
+                    disable $sub_id
+                } else {
+                    dict set Status Tags $id current_log $log_idx [list $sub_id $sub_ts_begin $ts_end]
+                    incr log_idx
+                    dict set Status Tags $sub_id current_log $log_idx [list $id $ts_begin $ts_end]
+                    incr log_idx
+                }
             }
             dict set Status log_idx $log_idx
-                        
-            dict set Status Tags $id depth 0
+            
+            if {$profile_level < 2} { dict set Status Tags $id profile_level 2}
+            return 
 
         } else {
             # If the tag had not been previously activated, its deactivation is ignored.
@@ -552,6 +593,17 @@ namespace eval profile {
 	}
 
 
+# 
+# Text interface:
+#
+        
+        proc tui_print {} {
+            variable Status
+            foreach id [lsort [dict keys [dict get $Status Tags]]] {
+                puts "$id: called [dict get $Status Tags $id count] times"
+                puts stderr "$id: called [dict get $Status Tags $id count] times, [dict get $Status Tags $id depth]"
+            }
+        }
 # 
 # GUI interface:
 #
