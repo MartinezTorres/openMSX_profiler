@@ -55,7 +55,6 @@ namespace eval profile {
             debug_cb [dict create] \
             profile_level 0 \
             disabled 0 \
-            alias "" \
             count 0 \
             depth 0 \
             previous_time_between_invocations 0 \
@@ -105,39 +104,14 @@ namespace eval profile {
     }
     
     proc disable id {
+
+        puts stderr "Disabling $id"
         
         variable Status
         dict set Status Tags $id disabled 1
         dict for {idx cb_id} [dict get $Status Tags $id debug_cb] { remove_cb $cb_id }
         dict set Status Tags $id debug_cb [dict create]
     }
-    
-    proc call_condition pc {
-        
-        set instr [debug read memory $pc]
-        if {$instr == 0xCD} {return 1}
-        set f [debug read "CPU regs" 1]
-        # C4 CALL_NZ 
-        if {$instr == 0xC4} {return [expr ($f & 0x40 == 0)] }
-        # D4 CALL_NC 
-        if {$instr == 0xD4} {return [expr ($f & 0x01 == 0)] }
-        # E4 CALL_PO 
-        if {$instr == 0xE4} {return [expr ($f & 0x04 == 0)] }
-        # F4 CALL_P
-        if {$instr == 0xF4} {return [expr ($f & 0x80 == 0)] }
-        # CC CALL_Z
-        if {$instr == 0xCC} {return [expr ($f & 0x40 != 0)] }
-        # DC CALL_C
-        if {$instr == 0xDC} {return [expr ($f & 0x01 != 0)] }
-        # EC CALL_PE
-        if {$instr == 0xEC} {return [expr ($f & 0x04 != 0)] }
-        # FC CALL_M
-        if {$instr == 0xFC} {return [expr ($f & 0x80 != 0)] }
-        puts stderr [format "Unsupported call 0x%02X" $instr]
-    }
-
-
-    
     
     proc init {} {
 
@@ -203,17 +177,11 @@ namespace eval profile {
                     set target_address [expr {$instr - 0xC7}]
                     set return_address [expr {$pc+1}]
                 }
-                                
-                #puts  -nonewline stderr "."
                 
                 set id [format "0x%04x_#%s" $target_address [profile::get_function_hash $target_address]]
                 profile::tag_create $id
                 
-                if {[dict size [dict get $profile::Status Tags $id debug_cb]]>4} { 
-                    puts stderr "Disabling $id"
-                    profile::disable $id 
-                
-                }
+                if {[dict size [dict get $profile::Status Tags $id debug_cb]]>4} { profile::disable $id }
                 if [dict get $profile::Status Tags $id disabled] { return }
                 
                 profile::tag_begin $id
