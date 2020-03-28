@@ -33,671 +33,817 @@
 #
 
 namespace eval profile {
-
-    # Status: execution related temporal variables. 
-    #    Resetting it shold not impact the gui.
-    if ![info exists Status] { variable Status {} }
-    variable Status_defaults [dict create \
-        Tags [dict create] \
-        auto_scan 0 \
-        avg_halflife 1 \
-        log_idx 0 \
-        debug_cb [dict create] \
-        debug_cb_idx 0 \
-        active_tags [dict create] \
-        z80_interface_enabled 0 \
-        z80_section_name_address 0xF931 \
-        ]
     
-    # Tag: labeled portion of the code.
-    variable Status_Tag_default [dict create \
-            hash {} \
-            debug_cb [dict create] \
-            profile_level 0 \
-            disabled 0 \
-            count 0 \
-            depth 0 \
-            previous_time_between_invocations 0 \
-            previous_occupation 0 \
-            previous_ts_begin 0 \
-            previous_ts_end 0 \
-            previous_duration 0 \
-            previous_log [dict create] \
-            current_log [dict create] \
-            max_duration 0 \
-            avg_duration 0 \
-            max_time_between_invocations 0 \
-            avg_time_between_invocations 0 \
-            max_occupation 0 \
-            avg_occupation 0 \
-        ]
-#
-# Initialization:
-#
-    reset
-    proc reset {} {
-        deinit
-        init
-    }
+    namespace eval core {
 
-    proc deinit {} {
-        
-        variable Status
-        
-        if {![dict exists $Status debug_cb]} return
-        dict for {idx cb_id} [dict get $Status debug_cb] { remove_cb $cb_id }
-        
-        if {![dict exists $Status Tags]} return
-        dict for {id val} [dict get $Status Tags] { tag_delete $id } 
-        
-        set Status [dict create]
-    }
+        if ![info exists Status] { variable Status {} }
+        if ![info exists Configuration] { variable Configuration {} }
 
-    proc get_function_hash {address} {
-        
-        append hash0 [debug read memory $address]
-        incr address
-        append hash1 [debug read memory $address]
-        incr address
-        append hash2 [debug read memory $address]
-        return [format "%02X%02X%02X" $hash0 $hash1 $hash2]
-    }
-    
-    proc disable id {
-
-        puts stderr "Disabling $id"
-        
-        variable Status
-        dict set Status Tags $id disabled 1
-        dict for {idx cb_id} [dict get $Status Tags $id debug_cb] { remove_cb $cb_id }
-        dict set Status Tags $id debug_cb [dict create]
-    }
-    
-    proc init {} {
-
-        variable Status
-        if {[dict size $Status]==0} {
+        proc start {} {
             
-            variable Status_defaults
-            set Status $Status_defaults
-            
-            tag_create "irq"
-            tag_add_cb "irq" set_bp 0x38 {} {
-                profile::tag_begin "irq"
-                profile::tag_add_cb_once "irq" set_watchpoint read_mem [reg sp] {} {
-                    profile::tag_end "irq"
-                }
-            }
-            
-            tag_create "vdp"
-            tag_add_cb "vdp" probe set_bp VDP.commandExecuting {} {
-                if [debug probe read VDP.commandExecuting] {
-                    profile::tag_begin "vdp"
-                } else {
-                    profile::tag_end "vdp"
-                }
-            }
-            
-            add_cb set_condition {[ \
-                set pc [expr {256 * [debug read "CPU regs" 20] + [debug read "CPU regs" 21]}]; \
-                set instr [debug read memory $pc]; \
-                expr {($instr == 0xCD) || (($instr & 0xC7) == 0xC4) || (($instr & 0xC7) == 0xC7)} \
-            ]} {
+            variable Status
+            if {[dict size $Status]==0} {
                 
-                if {![dict get $profile::Status auto_scan]} return
+                set Status [defaults::Status]
 
-                set pc [expr {256 * [debug read "CPU regs" 20] + [debug read "CPU regs" 21]}]
-                set instr [debug read memory $pc]
-                if {$instr == 0xCD} {
+                variable Configuration
+                if {[dict size $Configuration]==0} {set Configuration [defaults::Configuration]}
+                                
+                tag::create "irq"
+                callback::add_tag "irq" set_bp 0x38 {} {::profile::core::irq::cb}
+                
+                tag::create "vdp"
+                callback::add_tag "vdp" probe set_bp VDP.commandExecuting {} {::profile::core::vdp::cb}
+                
+                callback::add set_condition {} {::profile::core::auto_scan::cb}   
+            }
+            return
+        }          
 
+        proc stop {} {
+            
+            variable Status
+                        
+            if {![dict exists $Status debug_cb]} return
+            dict for {idx cb_id} [dict get $Status debug_cb] { remove_cb $cb_id }
+            
+            if {![dict exists $Status Tags]} return
+            dict for {tag_id val} [dict get $Status Tags] { tag_delete $tag_id } 
+            
+            set Status [dict create]
+            return
+        }
+
+        proc resetConfiguration {} {
+            
+            variable Configuration
+            set Configuration [defaults::Configuration]
+            return
+        }
+
+        namespace eval defaults {
+            
+            proc Status {} { return [dict create \
+                Tags [dict create] \
+                call_stack [dict create] \
+                log_idx 0 \
+                debug_cb [dict create] \
+                debug_cb_idx 0 \
+                active_tags [dict create] \
+            ]}
+
+            proc Configuration {} { return [dict create \
+                auto_scan 0 \
+                avg_halflife 1 \
+                z80_interface_enabled 0 \
+                z80_section_name_address 0xF931 \
+            ]}
+
+            proc Tag {} { return [dict create \
+                    hash {} \
+                    debug_cb [dict create] \
+                    profile_level 0 \
+                    disabled 0 \
+                    count 0 \
+                    depth 0 \
+                    previous_time_between_invocations 0 \
+                    previous_occupation 0 \
+                    previous_ts_begin 0 \
+                    previous_ts_end 0 \
+                    previous_duration 0 \
+                    previous_log [dict create] \
+                    current_log [dict create] \
+                    max_duration 0 \
+                    avg_duration 0 \
+                    max_time_between_invocations 0 \
+                    avg_time_between_invocations 0 \
+                    max_occupation 0 \
+                    avg_occupation 0 \
+            ]}
+        }
+
+        namespace eval callback {
+
+            proc remove cb_id {
+                                
+                lassign [split $cb_id #] type num
+                switch $type {
+                    bp   { debug remove_bp $cb_id }
+                    wp   { debug remove_watchpoint $cb_id }
+                    cond { debug remove_condition $cb_id }
+                    pp   { debug probe remove_bp $cb_id }
+                    default { error [format "Unknown debug type: %s" $cb_id] }
+                }
+            }
+
+            proc add {args} {
+                
+                namespace upvar ::profile::core Status Status
+                
+                set idx [dict get $Status debug_cb_idx]
+                incr idx
+                dict set Status debug_cb_idx $idx
+                
+                dict set Status debug_cb $idx [debug {*}$args ]
+                return
+            }
+
+            proc add_once {args} {
+                
+                namespace upvar ::profile::core Status Status
+                                        
+                set idx [dict get $Status debug_cb_idx]
+                incr idx
+                dict set Status debug_cb_idx $idx
+
+                dict set Status debug_cb $idx [debug {*}[lreplace $args end end "                    
+                    [lindex $args end]
+                    profile::core::callback::remove_cb \[dict get \$profile::core::Status debug_cb $idx]
+                    dict unset profile::core::Status debug_cb $idx
+                "]]
+                return
+            }
+
+            proc add_tag {tag_id args} {
+                
+                namespace upvar ::profile::core Status Status
+                
+                set idx [dict get $Status debug_cb_idx]
+                incr idx
+                dict set Status debug_cb_idx $idx
+                
+                dict set Status debug_cb $idx {*}[lreplace $args end end "                    
+                    set tag_id $tag_id
+                    [lindex $args end]
+                "]
+            }
+
+            proc add_tag_once {tag_id args} {
+                
+                namespace upvar ::profile::core Status Status
+                                        
+                set idx [dict get $Status debug_cb_idx]
+                incr idx
+                dict set Status debug_cb_idx $idx
+
+                dict set Status Tags $tag_id debug_cb $idx [debug {*}[lreplace $args end end "
+                    set tag_id $tag_id                 
+                    [lindex $args end]
+                    profile::core::callback::remove_cb \[dict get \$profile::core::Status Tags $tag_id debug_cb $idx]
+                    dict unset profile::core::Status Tags $tag_id debug_cb $idx
+                "]]
+            }
+        }
+
+        namespace eval irq {
+            proc cb {} {
+                ::profile::core::tag::start "irq"
+                ::profile::core::callback::add_tag_once "irq" set_watchpoint read_mem [reg sp] {} {
+                    ::profile::core::tag::end "irq"
+                }                
+            }
+        }
+
+        namespace eval vdp {
+            proc cb {} {
+                if [debug probe read VDP.commandExecuting] {
+                    ::profile::core::tag::start "vdp"
+                } else {
+                    ::profile::core::tag::end "vdp"
+                }
+            }
+        }
+
+        namespace eval tag {
+
+
+            proc disable tag_id {
+
+                puts stderr "Disabling $tag_id"
+                
+                namespace upvar ::profile::core Status Status
+                
+                dict set Status Tags $tag_id disabled 1
+                dict for {idx cb_id} [dict get $Status Tags $tag_id debug_cb] { remove_cb $cb_id }
+                dict set Status Tags $tag_id debug_cb [dict create]
+            }
+
+            proc create tag_id {
+
+                namespace upvar ::profile::core Status Status
+                
+                if {![dict exists $Status Tags $tag_id]} {
+                    dict set Status Tags $tag_id [::profile::core::defaults::Tag]
+                }
+            }
+
+            proc delete tag_id {
+                
+                namespace upvar ::profile::core Status Status
+                
+                if {![dict exists $Status Tags $tag_id]} return
+                
+                dict for {idx cb_id} [dict get $Status Tags $tag_id debug_cb] { 
+                    ::profile::core::callback::remove $cb_id 
+                }
+                
+                dict unset Status Tags $tag_id
+                dict unset Status active_tags $tag_id
+            }
+
+            proc start tag_id {
+                        
+                namespace upvar ::profile::core Status Status
+                
+                # If the tag that wasn't active gets activated, we register the activation
+                if {[dict get $Status Tags $tag_id depth]==0} {
+
+                    # We add the tag to the list of active tags
+                    dict set Status active_tags $tag_id [machine_info time]
+                    dict set Status Tags $tag_id depth 1
+                } else {
+                    # We increase the recursion of this tag
+                    dict with Status Tags $tag_id { incr depth }
+                }
+            }
+
+            proc end tag_id {
+
+                namespace upvar ::profile::core Status Status
+                namespace upvar ::profile::core Configuration Configuration
+
+                # If recursion depth reaches zero, the tag deactivation is complete, and metrics get updated.
+                if {[dict get $Status Tags $tag_id depth]==1} {
+                    
+                    set ts_begin [dict get $Status active_tags $tag_id]
+                    set ts_end [machine_info time]
+                    
+                    dict set Status Tags $tag_id depth 0
+                    dict with Status Tags $tag_id { incr count }
+                    dict unset Status active_tags $tag_id
+                                    
+                    set profile_level [dict get $Status Tags $tag_id profile_level]
+                                
+                    if {$profile_level < 1 && $ts_end-$ts_begin < 0.0001} {                         
+                        return 
+                    }
+
+                    if {$profile_level < 2 && $ts_end-$ts_begin < 0.0020} { 
+
+                        set log_idx [dict get $Status log_idx]
+                        dict for {sub_id sub_ts_begin} [dict get $Status active_tags] {
+                            dict set Status Tags $sub_id current_log $log_idx [list $tag_id $ts_begin $ts_end]
+                            incr log_idx
+                        }
+                        dict set Status log_idx $log_idx
+
+                        if {$profile_level < 1} { dict set Status Tags $tag_id profile_level 1}
+                        return 
+                    }
+
+                
+                    dict with Status Tags $tag_id { 
+
+                        set previous_time_between_invocations [expr $ts_end-$previous_ts_end]
+                        
+                        set previous_ts_begin $ts_begin
+                        set previous_ts_end $ts_end
+                        set previous_duration [expr $previous_ts_end-$previous_ts_begin]
+                        
+                        set previous_log $current_log
+                        set current_log [dict create]
+                        
+                        if {$count==0} {
+                            set max_duration $previous_duration
+                            set avg_duration $previous_duration
+                                                      
+                        } else {                    
+
+                            set previous_occupation [expr $previous_duration/$previous_time_between_invocations]
+
+                            # We calculate the decay based on exponential mean.
+                            set avg_halflife [dict get $Configuration avg_halflife]
+                            set decay [expr $avg_halflife>0?pow(0.5,$previous_time_between_invocations/$avg_halflife):0]
+
+                            set max_duration [expr $previous_duration>$max_duration?$previous_duration:$max_duration]
+                            set avg_duration [expr $decay*$previous_duration + (1.-$decay)*$avg_duration]
+
+                            set max_time_between_invocations [expr $previous_time_between_invocations>$max_time_between_invocations?$previous_time_between_invocations:$max_time_between_invocations]
+                            set avg_time_between_invocations [expr $decay*$previous_time_between_invocations + (1.-$decay)*$avg_time_between_invocations]
+                            
+                            set max_occupation [expr $previous_occupation>$max_occupation?$previous_occupation:$max_occupation]
+                            set avg_occupation [expr $decay*$previous_occupation + (1.-$decay)*$avg_occupation]       
+                        }
+                    }
+                    
+                    set ts_clean [expr {$ts_begin-1.0}]
+                    set log_idx [dict get $Status log_idx]
+                    dict for {sub_id sub_ts_begin} [dict get $Status active_tags] {
+                        
+                        if {$sub_ts_begin < $ts_clean} {
+                            dict set Status Tags $sub_id depth 1
+                            end $sub_id
+                            disable $sub_id
+                        } else {
+                            dict set Status Tags $tag_id current_log $log_idx [list $sub_id $sub_ts_begin $ts_end]
+                            incr log_idx
+                            dict set Status Tags $sub_id current_log $log_idx [list $tag_id $ts_begin $ts_end]
+                            incr log_idx
+                        }
+                    }
+                    dict set Status log_idx $log_idx
+                    
+                    if {$profile_level < 2} { dict set Status Tags $tag_id profile_level 2}
+                    return 
+
+                } else {
+                    # If the tag had not been previously activated, its deactivation is ignored.
+                    if {[dict get $Status Tags $tag_id depth]>0} {
+                        
+                        # We decrease the recursion depth of this tag.
+                        dict with Status Tags $tag_id { incr depth -1}            
+                    }
+                }
+            }
+
+            proc abort tag_id {
+                abort $tag_id
+            }
+        }                        
+
+
+        namespace eval auto_scan {
+
+
+            proc get_function_hash {address} {
+                
+                append hash0 [debug read memory $address]
+                incr address
+                append hash1 [debug read memory $address]
+                incr address
+                append hash2 [debug read memory $address]
+                return [format "%02X%02X%02X" $hash0 $hash1 $hash2]
+            }
+
+            proc tentative_call {pc instr} {
+
+                namespace upvar ::profile::core Status Status
+                
+                # CD CALL 
+                if {$instr == 0xCD} { 
                     set target_address [peek16 [expr {$pc+1}]]
                     set return_address [expr {$pc+3}]
                 } elseif {($instr & 0xC7) == 0xC4} {
                     set f [debug read "CPU regs" 1]
                     # C4 CALL_NZ 
-                    if       {$instr == 0xC4} { if {$f & 0x40 != 0} {return} 
+                    if       {$instr == 0xC4} { if {($f & 0x40) != 0} return  
                     # D4 CALL_NC 
-                    } elseif {$instr == 0xD4} { if {$f & 0x01 != 0} {return} 
+                    } elseif {$instr == 0xD4} { if {($f & 0x01) != 0} return 
                     # E4 CALL_PO4
-                    } elseif {$instr == 0xE4} { if {$f & 0x04 != 0} {return} 
+                    } elseif {$instr == 0xE4} { if {($f & 0x04) != 0} return 
                     # F4 CALL_P
-                    } elseif {$instr == 0xF4} { if {$f & 0x80 != 0} {return} 
+                    } elseif {$instr == 0xF4} { if {($f & 0x80) != 0} return 
                     # CC CALL_Z
-                    } elseif {$instr == 0xCC} { if {$f & 0x40 == 0} {return} 
+                    } elseif {$instr == 0xCC} { if {($f & 0x40) == 0} return 
                     # DC CALL_C
-                    } elseif {$instr == 0xDC} { if {$f & 0x01 == 0} {return} 
+                    } elseif {$instr == 0xDC} { if {($f & 0x01) == 0} return 
                     # EC CALL_PE
-                    } elseif {$instr == 0xEC} { if {$f & 0x04 == 0} {return} 
+                    } elseif {$instr == 0xEC} { if {($f & 0x04) == 0} return 
                     # FC CALL_M
-                    } elseif {$instr == 0xFC} { if {$f & 0x80 == 0} {return} } 
+                    } elseif {$instr == 0xFC} { if {($f & 0x80) == 0} return } 
+
                     set target_address [peek16 [expr {$pc+1}]]
                     set return_address [expr {$pc+3}]
-                } else {
+                } elseif {($instr & 0xC7) == 0xC7} {
                     # RST
                     set target_address [expr {$instr - 0xC7}]
                     set return_address [expr {$pc+1}]
-                }
-                
-                set id [format "0x%04x_#%s" $target_address [profile::get_function_hash $target_address]]
-                profile::tag_create $id
-                
-                if {[dict size [dict get $profile::Status Tags $id debug_cb]]>4} { profile::disable $id }
-                if [dict get $profile::Status Tags $id disabled] { return }
-                
-                profile::tag_begin $id
-                profile::tag_add_cb_once $id set_bp $return_address  {} {
-                    profile::tag_end $id
-                }
-            }
-        }        
-    }
-
-#
-# TAG creation and deletion:
-#
-    proc tag_create id {
-        
-        variable Status
-        init
-        
-        if {![dict exists $Status Tags $id]} {
-            variable Status_Tag_default
-            dict set Status Tags $id $Status_Tag_default
-        }
-    }
-
-    proc tag_delete id {
-        
-        variable Status
-        
-        if {![dict exists $Status Tags $id]} return
-        dict for {idx cb_id} [dict get $Status Tags $id debug_cb] { remove_cb $cb_id }
-        
-        dict unset Status Tags $id
-        dict unset Status active_tags $id
-    }
-
-#
-# Debug Callbacks:
-#
-
-    proc remove_cb cb_id {
-        
-        lassign [split $cb_id #] type num
-        switch $type {
-            bp   { debug remove_bp $cb_id }
-            wp   { debug remove_watchpoint $cb_id }
-            cond { debug remove_condition $cb_id }
-            pp   { debug probe remove_bp $cb_id }
-            default { error [format "Unknown debug type: %s" $cb_id] }
-        }
-    }
-    
-
-    proc add_cb {args} {
-        
-        variable Status
-        init
-        
-        set idx [dict get $Status debug_cb_idx]
-        incr idx
-        dict set Status debug_cb_idx $idx
-                
-        dict set Status debug_cb $idx [debug {*}$args ]
-        return
-    }
-    
-    proc add_cb_once {args} {
-                
-        variable Status
-        init
-        
-        set idx [dict get $Status debug_cb_idx]
-        incr idx
-        dict set Status debug_cb_idx $idx
-        
-        set body [lindex $args end]
-        set body "
-            $body
-            profile::remove_cb \[dict get \$profile::Status debug_cb $idx]
-            dict unset profile::Status debug_cb $idx
-        "
-        set args [lreplace $args end end $body]
-                
-        dict set Status debug_cb $idx [debug {*}$args ]
-        return
-    }
-    
-
-    proc tag_add_cb {id args} {
-        
-        variable Status
-        tag_create $id
-        
-        set idx [dict get $Status debug_cb_idx]
-        incr idx
-        dict set Status debug_cb_idx $idx
-        
-        set body [lindex $args end]
-        set body "
-            set id $id
-            $body
-        "
-        set args [lreplace $args end end $body]
-        
-        dict set Status Tags $id debug_cb $idx [debug {*}$args ]
-
-        return
-    }
-
-    proc tag_add_cb_once {id args} {
-        
-        variable Status
-        tag_create $id
-        
-        set idx [dict get $Status debug_cb_idx]
-        incr idx
-        dict set Status debug_cb_idx $idx
-
-        set body [lindex $args end]
-        set body "set id \"$id\";
-            $body
-            if \[dict exists \$profile::Status Tags $id debug_cb $idx] {
-                profile::remove_cb \[dict get \$profile::Status Tags $id debug_cb $idx]
-                dict unset profile::Status Tags $id debug_cb $idx
-            }
-        "
-        set args [lreplace $args end end $body]
-        
-        dict set Status Tags $id debug_cb $idx [debug {*}$args ]
-        
-        return
-    }
-
-# 
-# Z80 interface:
-
-
-	set_help_text profile::get_debug_string [join {
-		"Usage: profile::get_debug_string <address>\n"
-		"Reads a null terminated string from the stated address."
-	} {}]
-    proc get_debug_string {address} {
-        set s ""; 
-        while {[peek $address] != 0 && [string length $s] < 255} { 
-            append s [format %c [peek $address]];  
-            incr address 1;  
-        }; 
-        return $s
-    }
-    
-	set_help_text profile::enable_z80_interface [join {
-		"Usage: profile::start_z80_interface \[<begin_port>] \[<end_port>] \[<section_name_address>]\n"
-		"Enables the z80 interface."
-        "To start a section, write the pointer to the section name to address <section_name_address>, and then send any byte to the I/O port <begin_port>."
-        "To end a section, write the pointer to the section name to address <section_name_address>, and then send any byte to the I/O port <end_port>."
-        "Enabling the z80 interface automatically enables the IRQ section, that tracks the time spent in the IRQ, and the FRAME section which tracks the time between IRQs."
-	} {}]
-    proc enable_z80_interface { {begin_port {0x2C}} {end_port {0x2D}} {section_name_address {0xF931}}} {
-        
-        variable z80_interface_enabled
-        if {$z80_interface_enabled} {return}
-        set z80_interface_enabled 1
-        
-        set z80_section_name_address $section_name_address
-        
-        debug set_watchpoint write_io $begin_port {} [namespace code {
-            set name [get_debug_string [peek16 $z80_section_name_address]]
-            if {[string match "exec:*" $name]} {
-                eval [string range $name 5 end]
-            } else {
-                set z80_self_estimation_time $::wp_last_value
-                section_begin [string map {" " "_"} $name]
-                set z80_self_estimation_time 0
-            }
-        }]
-
-        debug set_watchpoint write_io $end_port {} [namespace code {
-            set name [get_debug_string [peek16 $z80_section_name_address]]
-            if {[string match "exec:*" $name]} {
-                eval [string range $name 5 end]
-            } else {
-                set z80_self_estimation_time $::wp_last_value
-                section_end [string map {" " "_"} $name]
-                set z80_self_estimation_time 0
-            }
-        }]
-    }
-
-	set_help_text profile::enable_z80_self_estimation [join {
-		"Usage: profile::enable_z80_self_estimation \[<begin_port>] \[<end_port>] \[<section_name_address>] \[<time_unit>]\n"
-		"Enables the z80 self estimaton feature."
-        "This code is useful when we design z80 code that keeps track of the time that has passed since the VDP interruption started."
-        "In this case, you must write the time that has passed to the I/O ports when starting or ending a section."
-        "The default unit is 1/6000 of a second, i.e., 1 percent of the frame time at 60 Hz, but it can be set to any value."
-	} {}]
-    proc enable_z80_self_estimation { {time_unit {[expr 1 / 6000]}} } {
-        
-        variable z80_self_estimation_time_unit
-        set z80_self_estimation_time_unit $time_unit
-    }
-
-
-# 
-# Add monitored sections:
-#
-
-	set_help_text profile::tag_begin_bp [join {
-		"Usage: profile::tag_begin_bp <id> <address> \[<condition>]\n"
-		"Define a breakpoint which starts a section."
-	} {}]
-	proc tag_begin_bp {id address {condition {}}} {
-        tag_create $id [debug set_bp $address $condition [namespace code "tag_begin $id"]]
-	}
-
-	set_help_text profile::tag_end_bp [join {
-		"Usage: profile::tag_end_bp <id> <address> \[<condition>]\n"
-		"Define a breakpoint which ends a section."
-	} {}]
-	proc tag_end_bp {id address {condition {}}} {
-        tag_create $id [debug set_bp $address $condition [namespace code "tag_end $id"]]
-	}
-
-# 
-# Add monitored function calls:
-#
-
-
-	set_help_text profile::tag_scope_bp [join {
-		"Usage: profile::tag_scope_bp <id> <address> \[<condition>]\n"
-		"Define a breakpoint which starts a section, and will end it after the "
-		"value on the top of the stack is read, typically when the method "
-		"returns or when it is popped. Useful for profiling function calls."
-	} {}]
-	proc tag_scope_bp {id address {condition {}}} {
-
-        tag_create $id
-        dict set Status Tags $id hash [get_function_hash $address]
-        tag_add_cb $id set_bp $address $condition {
-            
-            set hash [dict get $profile::Status Tags $id hash]
-            if {$hash=={} || $hash==[profile::get_function_hash $address]} {
-                profile::tag_begin $id
-                profile::tag_add_cb_once $id set_watchpoint read_mem [reg sp] {} {profile::tag_end $id}
-            }
-        }
-	}
-
-# 
-# Add all function calls:
-# 
-
-
-# 
-# Internal interface:
-#
-
-	set_help_text profile::tag_begin [join {
-		"Usage: profile::tag_begin <ids>\n"
-	} {}]
-	proc tag_begin id {
-                
-        variable Status
-        
-        # If the tag that wasn't active gets activated, we register the activation
-        if {[dict get $Status Tags $id depth]==0} {
-
-            # We add the tag to the list of active tags
-            dict set Status active_tags $id [machine_info time]
-            dict set Status Tags $id depth 1
-        } else {
-            # We increase the recursion of this tag
-            dict with Status Tags $id { incr depth }
-        }
-	}
-
-	set_help_text profile::tag_end [join {
-		"Usage: profile::section_end <id>\n"
-		"Ends a section."
-	} {}]
-	proc tag_end id {
-
-        variable Status
-
-        # If recursion depth reaches zero, the tag deactivation is complete, and metrics get updated.
-        if {[dict get $Status Tags $id depth]==1} {
-
-            
-            set ts_begin [dict get $Status active_tags $id]
-            set ts_end [machine_info time]
-            
-            dict set Status Tags $id depth 0
-            dict with Status Tags $id { incr count }
-            dict unset Status active_tags $id
-                            
-            set profile_level [dict get $Status Tags $id profile_level]
-                        
-            if {$profile_level < 1 && $ts_end-$ts_begin < 0.0001} { 
-                
-                return 
-            }
-
-            if {$profile_level < 2 && $ts_end-$ts_begin < 0.0020} { 
-
-                set log_idx [dict get $Status log_idx]
-                dict for {sub_id sub_ts_begin} [dict get $Status active_tags] {
-                    dict set Status Tags $sub_id current_log $log_idx [list $id $ts_begin $ts_end]
-                    incr log_idx
-                }
-                dict set Status log_idx $log_idx
-
-                if {$profile_level < 1} { dict set Status Tags $id profile_level 1}
-                return 
-            }
-
-        
-            dict with Status Tags $id { 
-
-                set previous_time_between_invocations [expr $ts_end-$previous_ts_end]
-                
-                set previous_ts_begin $ts_begin
-                set previous_ts_end $ts_end
-                set previous_duration [expr $previous_ts_end-$previous_ts_begin]
-                
-                set previous_log $current_log
-                set current_log [dict create]
-                
-                if {$count==0} {
-                    set max_duration $previous_duration
-                    set avg_duration $previous_duration
-                                              
-                } else {                    
-
-                    set previous_occupation [expr $previous_duration/$previous_time_between_invocations]
-
-                    # We calculate the decay based on exponential mean.
-                    set avg_halflife [dict get $Status avg_halflife]
-                    set decay [expr $avg_halflife>0?pow(0.5,$previous_time_between_invocations/$avg_halflife):0]
-
-                    set max_duration [expr $previous_duration>$max_duration?$previous_duration:$max_duration]
-                    set avg_duration [expr $decay*$previous_duration + (1.-$decay)*$avg_duration]
-
-                    set max_time_between_invocations [expr $previous_time_between_invocations>$max_time_between_invocations?$previous_time_between_invocations:$max_time_between_invocations]
-                    set avg_time_between_invocations [expr $decay*$previous_time_between_invocations + (1.-$decay)*$avg_time_between_invocations]
-                    
-                    set max_occupation [expr $previous_occupation>$max_occupation?$previous_occupation:$max_occupation]
-                    set avg_occupation [expr $decay*$previous_occupation + (1.-$decay)*$avg_occupation]       
-                }
-            }
-            
-            set ts_clean [expr {$ts_begin-1.0}]
-            set log_idx [dict get $Status log_idx]
-            dict for {sub_id sub_ts_begin} [dict get $Status active_tags] {
-                
-                if {$sub_ts_begin < $ts_clean} {
-                    dict set Status Tags $sub_id depth 1
-                    profile::tag_end $sub_id
-                    disable $sub_id
                 } else {
-                    dict set Status Tags $id current_log $log_idx [list $sub_id $sub_ts_begin $ts_end]
-                    incr log_idx
-                    dict set Status Tags $sub_id current_log $log_idx [list $id $ts_begin $ts_end]
-                    incr log_idx
+                    return
+                }
+                
+                set tag_id [format "0x%04x_#%s" $target_address [get_function_hash $target_address]]
+                ::profile::core::tag::create $tag_id
+                
+                if {[dict size [dict get $Status Tags $tag_id debug_cb]]>4} { disable $tag_id }
+                if [dict get $Status Tags $tag_id disabled] { return }
+                
+                set stack_idx [dict size [dict get $Status call_stack]]
+                set stack_address [expr [reg sp]-2]
+                while {$stack_idx>0} {
+                    lassign [dict get $Status call_stack [expr {$stack_idx-1}]] previous_stack_address previous_return_address
+                    if {$previous_stack_address > $stack_address} { break }
+                    #puts stderr "Clean stack"
+                    dict unset Status call_stack [expr {$stack_idx-1}]
+                    incr stack_idx -1
+                }
+                dict set Status call_stack $stack_idx [list $stack_address $return_address $tag_id]
+                
+                ::profile::core::tag::start $tag_id      
+            }
+            
+            proc tentative_ret {pc instr} {
+
+                namespace upvar ::profile::core Status Status
+
+                # C9 RET
+                if {$instr == 0xC9} { 
+                } elseif {($instr & 0xC7) == 0xC0} {
+                    set f [debug read "CPU regs" 1]
+                    # C0 RET_NZ 
+                    if       {$instr == 0xC0} { if {($f & 0x40) != 0} return  
+                    # D0 RET_NC 
+                    } elseif {$instr == 0xD0} { if {($f & 0x01) != 0} return 
+                    # E0 RET_PO
+                    } elseif {$instr == 0xE0} { if {($f & 0x04) != 0} return 
+                    # F0 RET_P
+                    } elseif {$instr == 0xF0} { if {($f & 0x80) != 0} return 
+                    # C8 RET_Z
+                    } elseif {$instr == 0xC8} { if {($f & 0x40) == 0} return 
+                    # D8 RET_C
+                    } elseif {$instr == 0xD8} { if {($f & 0x01) == 0} return 
+                    # E8 RET_PE
+                    } elseif {$instr == 0xE8} { if {($f & 0x04) == 0} return 
+                    # F8 RET_M
+                    } elseif {$instr == 0xF8} { if {($f & 0x80) == 0} return } 
+                } else {
+                    return
+                }
+                
+                
+                set sp [reg sp]
+                set return_address [peek16 $sp]
+                set stack_idx [expr {[dict size [dict get $Status call_stack]]-1}]
+                
+                if {$stack_idx>=0} {
+                    
+                    lassign [dict get $Status call_stack $stack_idx] expected_sp expected_return_address expected_id
+                    
+                    if { $sp<$expected_sp } {
+                        #probably it is a retun from interrupt
+                    } elseif { ($expected_return_address == $return_address) && ($expected_sp == $sp) } {
+
+                        dict unset Status call_stack $stack_idx
+                        ::profile::core::tag::end $expected_id
+                        #puts stderr "Ret OK! $stack_idx"
+                    } else {
+
+                        set new_call_stack [dict create]
+                        set clean 1
+                        dict for {idx info} [dict get $Status call_stack] {
+                            lassign $info e_sp e_r_address e_id
+                            if $clean {
+                                if {$e_sp==$sp} {
+                                    if {$e_r_address==$return_address} {
+                                        ::profile::core::tag::end $e_id
+                                        puts stderr "Found buried return"
+                                    } else {
+                                        ::profile::core::tag::abort $e_id
+                                        puts stderr "Wrong buried return"
+                                    }
+                                    set clean 0
+                                    break
+                                }
+                                set a_r_address [peek16 $e_sp]
+                                #puts stderr [format "#%02d : #0x%04X: 0x%04X -> 0x%04X" $idx $e_sp $e_r_address $a_r_address]
+                                
+                                if {$e_r_address == $a_r_address} {
+                                    dict set new_call_stack [dict size $new_call_stack] $info
+                                } else {
+                                    ::profile::core::tag::abort $e_id
+                                    set clean 0                                        
+                                }
+                            } else {
+                                ::profile::core::tag::abort $e_id
+                            }
+                        }
+
+                        dict set Status call_stack $new_call_stack
+                    }
                 }
             }
-            dict set Status log_idx $log_idx
-            
-            if {$profile_level < 2} { dict set Status Tags $id profile_level 2}
-            return 
 
-        } else {
-            # If the tag had not been previously activated, its deactivation is ignored.
-            if {[dict get $Status Tags $id depth]>0} {
+            proc cb {} {
+
+                namespace upvar ::profile::core Configuration Configuration
                 
-                # We decrease the recursion depth of this tag.
-                dict with Status Tags $id { incr depth -1}            
+                if {![dict get $Configuration auto_scan]} { return }
+                                
+                set pc [expr {256 * [debug read "CPU regs" 20] + [debug read "CPU regs" 21]}]
+                set instr [debug read memory $pc]
+                
+                # Shortcut: neither a Call or a Ret
+                if {($instr & 0xC0) != 0xC0} { return }
+
+
+                if {($instr & 0x04) == 0x04} {
+                    tentative_call $pc $instr
+                } else {
+                    tentative_ret $pc $instr
+                }
+
             }
         }
-	}
 
+        namespace eval z80 {
+
+            # 
+            # Z80 interface:
+
+
+                set_help_text profile::get_debug_string [join {
+                    "Usage: profile::get_debug_string <address>\n"
+                    "Reads a null terminated string from the stated address."
+                } {}]
+                proc get_debug_string {address} {
+                    set s ""; 
+                    while {[peek $address] != 0 && [string length $s] < 255} { 
+                        append s [format %c [peek $address]];  
+                        incr address 1;  
+                    }; 
+                    return $s
+                }
+                
+                set_help_text profile::enable_z80_interface [join {
+                    "Usage: profile::start_z80_interface \[<begin_port>] \[<end_port>] \[<section_name_address>]\n"
+                    "Enables the z80 interface."
+                    "To start a section, write the pointer to the section name to address <section_name_address>, and then send any byte to the I/O port <begin_port>."
+                    "To end a section, write the pointer to the section name to address <section_name_address>, and then send any byte to the I/O port <end_port>."
+                    "Enabling the z80 interface automatically enables the IRQ section, that tracks the time spent in the IRQ, and the FRAME section which tracks the time between IRQs."
+                } {}]
+                proc enable_z80_interface { {begin_port {0x2C}} {end_port {0x2D}} {section_name_address {0xF931}}} {
+                    
+                    variable z80_interface_enabled
+                    if {$z80_interface_enabled} {return}
+                    set z80_interface_enabled 1
+                    
+                    set z80_section_name_address $section_name_address
+                    
+                    debug set_watchpoint write_io $begin_port {} [namespace code {
+                        set name [get_debug_string [peek16 $z80_section_name_address]]
+                        if {[string match "exec:*" $name]} {
+                            eval [string range $name 5 end]
+                        } else {
+                            set z80_self_estimation_time $::wp_last_value
+                            section_begin [string map {" " "_"} $name]
+                            set z80_self_estimation_time 0
+                        }
+                    }]
+
+                    debug set_watchpoint write_io $end_port {} [namespace code {
+                        set name [get_debug_string [peek16 $z80_section_name_address]]
+                        if {[string match "exec:*" $name]} {
+                            eval [string range $name 5 end]
+                        } else {
+                            set z80_self_estimation_time $::wp_last_value
+                            section_end [string map {" " "_"} $name]
+                            set z80_self_estimation_time 0
+                        }
+                    }]
+                }
+
+                set_help_text profile::enable_z80_self_estimation [join {
+                    "Usage: profile::enable_z80_self_estimation \[<begin_port>] \[<end_port>] \[<section_name_address>] \[<time_unit>]\n"
+                    "Enables the z80 self estimaton feature."
+                    "This code is useful when we design z80 code that keeps track of the time that has passed since the VDP interruption started."
+                    "In this case, you must write the time that has passed to the I/O ports when starting or ending a section."
+                    "The default unit is 1/6000 of a second, i.e., 1 percent of the frame time at 60 Hz, but it can be set to any value."
+                } {}]
+                proc enable_z80_self_estimation { {time_unit {[expr 1 / 6000]}} } {
+                    
+                    variable z80_self_estimation_time_unit
+                    set z80_self_estimation_time_unit $time_unit
+                }
+            
+        }
+
+    }
+
+    proc reset {} { core::stop; core::start; }
+
+    proc auto_scan {{enable {1}}} {
+        core::start
+        dict set ::profile::core::Configuration auto_scan $enable          
+    }
+
+    proc reload {} {
+        source [dict get [info frame 0] file]
+        reset
+    }
+
+    set_help_text profile::start_bp [join {
+        "Usage: profile::start_bp <tag_id> <address> \[<condition>]\n"
+        "Define a breakpoint which starts a section."
+    } {}]
+    proc start_bp {tag_id address {condition {}}} {
+        
+        core::start
+        core::tag::create $tag_id
+        core::callback::add_tag $tag_id set_bp $address $condition {
+            ::profile::core::tag::start $tag_id
+        }                
+    }
+
+    set_help_text profile::end_bp [join {
+        "Usage: profile::end_bp <tag_id> <address> \[<condition>]\n"
+        "Define a breakpoint which ends a section."
+    } {}]
+    proc end_bp {tag_id address {condition {}}} {
+        
+        core::start
+        core::tag::create $tag_id
+        core::callback::add_tag $tag_id set_bp $address $condition {
+            ::profile::core::tag::end $tag_id
+        }                
+    }
+
+    set_help_text profile::scope_bp [join {
+        "Usage: profile::scope_bp <tag_id> <address> \[<condition>]\n"
+        "Define a breakpoint which starts a section, and will end it after the "
+        "value on the top of the stack is read, typically when the method "
+        "returns or when it is popped. Useful for profiling function calls."
+    } {}]
+    proc scope_bp {tag_id address {condition {}}} {
+
+        core::start
+        tag_create $id
+        core::tag::create $tag_id
+        core::callback::add_tag $tag_id set_bp $address $condition {
+            ::profile::core::tag::start $tag_id
+            core::callback::add_tag_once $tag_id set_watchpoint read_mem [reg sp] {} {
+                ::profile::core::tag::end $tag_id
+            }
+        }
+    }
 
 # 
 # Text interface:
 #
+    namespace eval tui {
         
-        proc tui_print {} {
+        namespace upvar ::profile::core Status Status
+
+        proc print {} {
             variable Status
             foreach id [lsort [dict keys [dict get $Status Tags]]] {
                 puts "$id: called [dict get $Status Tags $id count] times"
                 puts stderr "$id: called [dict get $Status Tags $id count] times, [dict get $Status Tags $id depth]"
             }
         }
+    }
 # 
 # GUI interface:
 #
 
     namespace eval gui {
         
-        #
-# VDP Helper Functions:
-# TODO: Remove?
+        if ![info exists Status] { variable Status {} }
+        if ![info exists Configuration] { variable Configuration {} }
 
-	set_help_text profile::get_VDP_frame_duration [join {
-		"Usage: profile::get_VDP_frame_duration\n"
-		"Returns the duration, in seconds, of the VDP frame."
-	} {}]
-    proc get_VDP_frame_duration {} {
-        expr {(1368.0 * (([vdpreg 9] & 2) ? 313 : 262)) / (6 * 3579545)}
-    }
+        namespace eval defaults {
 
-	set_help_text profile::get_start_of_VDP_frame_time [join {
-		"Usage: profile::get_start_of_VDP_frame_time\n"
-		"Returns the time, in seconds, of the start of the VDP last frame."
-	} {}]
-    proc get_start_of_VDP_frame_time {} {
-        expr {[machine_info time] - [machine_info VDP_cycle_in_frame] / (6.0 * 3579545)}
-    }
-    
-	set_help_text profile::get_time_since_VDP_start [join {
-		"Usage: profile::get_time_since_VDP_start\n"
-		"Returns the time that has passed, in seconds, since the start of the last VDP start."
-	} {}]
-    proc get_time_since_VDP_start {} {
-        expr {[machine_info VDP_cycle_in_frame] / (6.0 * 3579545)}
-    }   
+            proc Status {} { return [dict create \
+                widgets [dict create] \
+                width 150 \
+                height 6 \
+                font_mono "skins/DejaVuSansMono.ttf" \
+                font_sans "skins/DejaVuSans.ttf" \
+                unit % \
+                avg_ratio 20 \
+                current_help_widget "" \
+                num_sections 0 \
+                num_favorite_sections 0 \
+                num_sections_in_usage 0 \
+                selected_section "" \
+                favorite_sections [dict create] \
+                section_color [dict create] \
+                next_color 0 \
+                sorting_criteria "avg" \
+                profile.all.ordering [dict create] \
+                profile.favorite.ordering [dict create] \            
+            ]}
 
-
-        # Gui_profile: description the GUI apparence.
-        #    Are not dependent on the current content being executed. 
-        #    Can be changed dynamically without affecting current profiling.
-        variable Gui_profile {}
-        variable Gui_profile_defaults [dict create \
-            buttons [dict create] \
-            width 150 \
-            height 6 \
-            font_mono "skins/DejaVuSansMono.ttf" \
-            font_sans "skins/DejaVuSans.ttf" \
-            unit % \
-            avg_ratio 20 \
-            current_help_widget "" \
-            num_sections 0 \
-            num_favorite_sections 0 \
-            num_sections_in_usage 0 \
-            selected_section "" \
-            favorite_sections [dict create] \
-            section_color [dict create] \
-            next_color 0 \
-            sorting_criteria "avg" \
-            profile.all.ordering [dict create] \
-            profile.favorite.ordering [dict create] \
-            ]
-        
-        proc gui_add_button {widget on_press on_release on_activation upkeep help} {
-            
-            variable config
-            dict set config buttons $widget [ dict create \
-                activated 0 \
-                on_press $on_press \
-                on_release $on_release \
-                on_activation $on_activation \
-                upkeep $upkeep \
-                help $help]
+            proc Configuration {} { return [dict create \
+                buttons [dict create] \
+                width 150 \
+                height 6 \
+                font_mono "skins/DejaVuSansMono.ttf" \
+                font_sans "skins/DejaVuSans.ttf" \
+                unit % \
+                avg_ratio 20 \
+                current_help_widget "" \
+                num_sections 0 \
+                num_favorite_sections 0 \
+                num_sections_in_usage 0 \
+                selected_section "" \
+                favorite_sections [dict create] \
+                section_color [dict create] \
+                next_color 0 \
+                sorting_criteria "avg" \
+                profile.all.ordering [dict create] \
+                profile.favorite.ordering [dict create] \            
+            ]}
         }
+        
+        namespace eval widgets {
+            
+            namespace eval button {
                 
-
-        proc gui_on_mouse_button1_down {} {
-            
-            variable config
-            dict for {widget button} [dict get $config buttons] {
-                if {[gui_is_mouse_over $widget]} {
-                    dict set config buttons $widget activated 1
-                    eval [dict get $config buttons $widget on_press]
+                proc gui_add_button {widget on_press on_release on_activation upkeep help} {
+                    
+                    variable config
+                    dict set config buttons $widget [ dict create \
+                        activated 0 \
+                        on_press $on_press \
+                        on_release $on_release \
+                        on_activation $on_activation \
+                        upkeep $upkeep \
+                        help $help]
                 }
+#                        osd configure profile.config.info.text -text [dict get $config buttons $widget help]
+# dict set config current_help_widget $widget
             }
-            after "mouse button1 up"   [namespace code gui_on_mouse_button1_up]
-        }
-        
-        proc gui_on_mouse_button1_up {} {
-            
-            variable config
-            dict for {widget button} [dict get $config buttons] {
 
-                if {[gui_is_mouse_over $widget] && [dict get $config buttons $widget activated]} {
-                    eval [dict get $config buttons $widget on_activation]
-                }
-                dict set config buttons $widget activated  0
-                eval [dict get $config buttons $widget on_release]
-            }
-            after "mouse button1 down" [namespace code gui_on_mouse_button1_down]
-        }
-        
-        proc gui_on_mouse_motion {} {
-            
-            variable config
-            
-            #if {![gui_is_mouse_over [dict get $config current_help_widget]]} {
-            
-                dict for {widget button} [dict get $config buttons] {
-                    if {[gui_is_mouse_over $widget]} {
-                        
-                        osd configure profile.config.info.text -text [dict get $config buttons $widget help]
-                        dict set config current_help_widget $widget
+            proc on_mouse_button1_down {} {
+                
+                namespace upvar ::profile::gui Status GuiStatus
+                dict for {widget_id widget} [dict get $GuiStatus widgets] {
+                    if {[gui_is_mouse_over $widget_id]} {
+                        dict set GuiStatus widgets $widget_id activated 1
+                        eval [dict get $GuiStatus widgets $widget_id on_press]
                     }
                 }
-            #}
-            after "mouse motion" [namespace code gui_on_mouse_motion]
-        }
-        
-        proc gui_is_mouse_over {widget} {
-            if {[osd exists $widget]} {
-                lassign [osd info $widget -mousecoord] x y
-                if {$x >= 0 && $x <= 1 && $y >= 0 && $y <= 1} {
-                    return 1
-                }
+                after "mouse button1 up" ::profile::gui::widgets::on_mouse_button1_up
             }
-            return 0
+
+            proc on_mouse_button1_up {} {
+                
+                namespace upvar ::profile::gui Status GuiStatus
+                dict for {widget_id widget} [dict get $GuiStatus widgets] {
+
+                    if {[gui_is_mouse_over $widget_id] && [dict get $GuiStatus widgets $widget_id activated]} {
+                        eval [dict get $GuiStatus widgets $widget_id on_activation]
+                    }
+                    dict set GuiStatus widgets $widget_id activated 0
+                    eval [dict get $GuiStatus widgets $widget_id on_release]
+                }
+                after "mouse button1 down" ::profile::gui::widgets::on_mouse_button1_down
+            }
+
+            proc on_mouse_motion {} {
+                
+                namespace upvar ::profile::gui Status GuiStatus
+                dict for {widget_id widget} [dict get $GuiStatus widgets] {
+                    if {[gui_is_mouse_over $widget_id]} {
+                        eval [dict get $GuiStatus widgets $widget_id on_hover]
+                    }
+                }
+                after "mouse motion" ::profile::gui::widgets::on_mouse_motion
+            }
+
+            proc is_mouse_over {widget} {
+                
+                if {[osd exists $widget]} {
+                    lassign [osd info $widget -mousecoord] x y
+                    if {($x >= 0) && ($x <= 1) && ($y >= 0) && ($y <= 1)} {
+                        return 1
+                    }
+                }
+                return 0
+            }
         }
 
+        namespace eval vdp {
+
+            set_help_text profile::get_VDP_frame_duration [join {
+                "Usage: profile::get_VDP_frame_duration\n"
+                "Returns the duration, in seconds, of the VDP frame."
+            } {}]
+            proc get_VDP_frame_duration {} {
+                expr {(1368.0 * (([vdpreg 9] & 2) ? 313 : 262)) / (6 * 3579545)}
+            }
+
+            set_help_text profile::get_start_of_VDP_frame_time [join {
+                "Usage: profile::get_start_of_VDP_frame_time\n"
+                "Returns the time, in seconds, of the start of the VDP last frame."
+            } {}]
+            proc get_start_of_VDP_frame_time {} {
+                expr {[machine_info time] - [machine_info VDP_cycle_in_frame] / (6.0 * 3579545)}
+            }
+            
+            set_help_text profile::get_time_since_VDP_start [join {
+                "Usage: profile::get_time_since_VDP_start\n"
+                "Returns the time that has passed, in seconds, since the start of the last VDP start."
+            } {}]
+            proc get_time_since_VDP_start {} {
+                expr {[machine_info VDP_cycle_in_frame] / (6.0 * 3579545)}
+            }   
+        }
+        
+
+
+
+########################################################################                
         proc gui_create {} {
             
 
@@ -1079,8 +1225,6 @@ namespace eval profile {
                 }
             }
         }
-        
-        
 
         proc gui_update {} {
 
@@ -1136,8 +1280,6 @@ namespace eval profile {
         
             after "20" profile::gui_update
         }
-        
-
 
         proc gui_to_unit {seconds} {
             variable config
@@ -1175,26 +1317,6 @@ namespace eval profile {
             }
             return
         }
-
-        set_help_text profile_break [join {
-            "Usage: profile_break <ids>\n"
-            "Breaks execution at the start of the section."
-        } {}]
-        proc profile_break {ids} {
-            variable sections
-            foreach id $ids {
-                dict with sections $id {
-                    set break true
-                    debug cont
-                }
-            }
-        }
-        
-        proc profile_break_tab {args} {
-            if {[llength $args] == 2} { return [section_list] }
-        }
-        set_tabcompletion_proc profile_break [namespace code profile_break_tab]
-
 
     }
 }
