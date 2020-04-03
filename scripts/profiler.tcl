@@ -8,7 +8,6 @@ namespace eval profiler {
 
         proc start {} {
             
-            
             variable Status
             if {[dict size $Status]==0} {
                 
@@ -675,6 +674,45 @@ namespace eval profiler {
 
 # 
 # GUI interface:
+
+    namespace eval gui {
+        
+        proc start {} {
+
+            ::wm::widget add rectangle "profiler" -osd.relw 1 -osd.relh 1 -osd.rgba 0x00000000 -osd.clip true
+
+            ::wm::widget add dock "profiler.dock" 
+            
+            ::wm::widget add ::profiler::gui::widgets::control_window "profiler.dock.panel.control" 
+            ::wm::widget add ::profiler::gui::widgets::all_tag_window "profiler.dock.panel.all_tags" 
+        }
+        
+        namespace eval widgets {
+
+            proc control_window {widget_id args} {
+            
+                ::wm::widget add window $widget_id \
+                    -osd.title.text.text "Controls" \
+                    -on_upkeep {
+                        
+                    }
+            }          
+
+            proc all_tag_window {widget_id args} {
+            
+                ::wm::widget add window $widget_id \
+                    -osd.title.text.text "All Detected Tags" \
+                    -on_upkeep {
+                        
+                    }
+            }          
+        }
+    }
+
+
+
+
+    if {0} {
     namespace eval gui {
         
         namespace eval core {
@@ -682,34 +720,6 @@ namespace eval profiler {
             if ![info exists Status] { variable Status [dict create] }
             if ![info exists Configuration] { variable Configuration [dict create] }
 
-            proc start {} {
-
-                namespace upvar ::profiler::gui::core Status GuiStatus
-                                
-                if {[dict size $GuiStatus]==0} {
-                    set GuiStatus [defaults::Status]
-                    namespace upvar ::profiler::gui::core Configuration GuiConfiguration
-                    if {[dict size $GuiConfiguration]==0} {set GuiConfiguration [defaults::Configuration]}
-                }
-
-                if {![osd exists "profiler"]} {
-                    
-#                    widgets::add [::profiler::gui::widgets::dock "profiler.dock"]
-#                    widgets::add [::profiler::gui::windows::configuration "profiler.dock.configuration"]
-
-                    widgets::add rectangle "profiler" \
-                        -osd_setup [list -x 0 -y 20 -relw 1 -relh 1 -rgba 0x00000000]
-
-                    widgets::add_dock "profiler.dock"
-                    
-                    after "mouse motion"       ::profiler::gui::core::wm::on_mouse_motion
-                    after "mouse button1 up"   ::profiler::gui::core::wm::on_mouse_button1_up
-                    after "mouse button1 down" ::profiler::gui::core::wm::on_mouse_button1_down
-                    after "20"                 ::profiler::gui::core::wm::upkeep
-                }
-                
-                return
-            }          
 
             proc stop {} {
                 
@@ -834,115 +844,7 @@ namespace eval profiler {
                     }
                 }
                 
-
-                namespace callbacks {
-
-                    namespace eval util {
-                        
-                        namespace upvar ::profiler::gui::core Status GuiStatus
-                        proc callback {widget_id callback_id} {
-                            
-                            namespace upvar ::profiler::gui::core Status GuiStatus
-                            
-                            dict with ::profiler::gui::core::Configuration {
-                                
-                                set w $width
-                                set h $height
-                                
-                                if {[dict exists $GuiStatus widgets $widget_id "-on_$callback_id"]} {
-                                    dict with GuiStatus widgets $widget_id {
-                                        eval [dict get $GuiStatus widgets $widget_id "-on_$callback_id"] 
-                                    }
-                                }
-                                if {[dict exists $GuiStatus widgets $widget_id "-osd_$callback_id"]} {
-                                    dict with GuiStatus widgets $widget_id {
-                                        osd configure $widget_id {*}[subst [dict get $GuiStatus widgets $widget_id "-osd_$callback_id"]]
-                                    }
-                                }                        
-                            }
-                        }
-                    }
-
-                    proc upkeep {} {
-
-                        namespace upvar ::profiler::gui::core Status GuiStatus
-                        if {![osd exists profiler]} return
-                        
-                        if {[dict get $GuiStatus active_configuration] != $::profiler::gui::core::Configuration} {
-                            
-                            dict set GuiStatus active_configuration $::profiler::gui::core::Configuration
-                                                
-                            dict for {widget_id widget} [dict get $GuiStatus widgets] {
-                                util::callback $widget_id setup
-                            }
-                        }
-                        
-                        
-                        dict for {widget_id widget} [dict get $GuiStatus widgets] {
-                            util::callback $widget_id upkeep
-                        }
-
-                        after "20" profiler::gui::core::wm::upkeep
-                        return
-                    }
-
-                    proc on_mouse_button1_down {} {
-                        
-                        namespace upvar ::profiler::gui::core Status GuiStatus
-                        if {![osd exists profiler]} return
-
-                        dict for {widget_id widget} [dict get $GuiStatus widgets] {
-                            if {[is_mouse_over $widget_id]} {
-                                dict set GuiStatus widgets $widget_id activated 1
-                                util::callback $widget_id press
-                            }
-                        }
-                        after "mouse button1 down" ::profiler::gui::core::wm::on_mouse_button1_down
-                    }
-
-                    proc on_mouse_button1_up {} {
-                        
-                        namespace upvar ::profiler::gui::core Status GuiStatus
-                        if {![osd exists profiler]} return
-
-                        dict for {widget_id widget} [dict get $GuiStatus widgets] {
-
-                            if {[is_mouse_over $widget_id] && [dict get $GuiStatus widgets $widget_id activated]} {
-                                util::callback $widget_id activation
-                            }
-                            dict set GuiStatus widgets $widget_id activated 0
-                            util::callback $widget_id release
-                        }
-                        after "mouse button1 up" ::profiler::gui::core::wm::on_mouse_button1_up
-                    }
-
-                    proc on_mouse_motion {} {
-                        
-                        namespace upvar ::profiler::gui::core Status GuiStatus
-                        if {![osd exists profiler]} return
-
-                        dict for {widget_id widget} [dict get $GuiStatus widgets] {
-                            if {[is_mouse_over $widget_id]} {
-                                util::callback $widget_id hover
-                            }
-                        }
-                        after "mouse motion" ::profiler::gui::core::wm::on_mouse_motion
-                   }
-
-                    proc is_mouse_over {widget} {
-                        
-                        if {[osd exists $widget]} {
-                            catch {
-                                lassign [osd info $widget -mousecoord] x y
-                                if {($x >= 0) && ($x <= 1) && ($y >= 0) && ($y <= 1)} {
-                                    return 1
-                                }
-                            }
-                        }
-                        return 0
-                    }
-                }
-            }
+        }
 
             namespace eval defaults {
 
@@ -1429,6 +1331,8 @@ namespace eval profiler {
     
         proc stop  {} { core::stop }
         proc start {} { ::profiler::start; core::start}        
+    }
+
     }
 }
 
