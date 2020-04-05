@@ -7,10 +7,12 @@ namespace eval wm {
 
     proc start {} {
 
+        if {[dict exists $::wm::Status widgets wm]} return
         if {[dict size $::wm::Status]==0} { set ::wm::Status [::wm::defaults::Status] } 
         if {[dict size $::wm::Configuration]==0} { set ::wm::Configuration [::wm::defaults::Configuration] } 
         
-        dict set ::wm::Status enabled 1
+        dict set ::wm::Status widgets wm {}
+        osd create rectangle "wm" -relw 1 -relh 1 -rgba 0x00000000 -clip true
                 
         after "20" ::wm::callbacks::upkeep
         after "mouse button1 down" ::wm::callbacks::on_mouse_button1_down
@@ -20,231 +22,402 @@ namespace eval wm {
 
     proc stop {} {
         
-        dict unset ::wm::Status enabled
+        dict unset ::wm::Status widgets wm
     }
 
     proc reload_configuration {} {
     }
+    
+    proc widget {command absolute_path args} {
+        
+        ::wm::start
+        if {$absolute_path=={}} { error "absolute_path can not be empty."}
+        
+        set previousPath $widget_methods::base_path 
+        set widget_methods::base_path $absolute_path
+        
+        if {[namespace which widget_methods::${command}] == {}} {
+            error "Unknown widget command: \"$command\""
+        }
 
-    namespace eval widget_commands {
+        set ret [widget_methods::${command} {*}$args]
 
-        proc update {id args} {
-
-            if {![dict exists $::wm::Status enabled]} {::wm::start}
-                        
-            foreach {arg value} $args {
-                switch $value {
-                    unset { dict set ::wm::Status widgets ${id.$arg} }
-                    reload {}
-                    default { dict set ::wm::Status widgets ${id.$arg} $value }
+        set widget_methods::base_path $previousPath
+        
+        return $ret
+    }
+    
+    namespace eval widget_methods {
+        
+        variable base_path {}
+        
+        # Returns the absolute path. 
+        # Key value "parent" actually moves up a level.
+        proc get_absolute_path { base_path {relative_path {}} } {
+            
+            if {$relative_path != {}} {             
+                set absolute_path $base_path.$relative_path
+            } else {
+                set absolute_path $base_path
             }
+            
+            #puts stderr $absolute_path
+            while {[regsub {\.[^\.]*\.parent} $absolute_path {} absolute_path]} {}
+            #puts stderr $absolute_path
+            return $absolute_path
+        }
+        
+        # Shortcut: returns the absolute path w.r.t. the current widget's path.
+        proc p { {relative_path {}} } { return [get_absolute_path $::wm::widget_methods::base_path $relative_path] }
 
-            regexp {^(.*)[\.][^\.]*$} $widget_id match parent_id
-            dict with ::wm::Configuration {}
-            dict with ::wm::Status widgets $widget_id {}
+        # Returns value of the argument pointed by the relative id
+        proc rexists {relative_path} {
 
-            foreach {arg value} $args {
-                if {[regexp {^([^\.]*)(.*)[\.]([^\.]*)$} $arg match prefix children parameter] && $prefix == "-osd"} {
-                    #puts stderr [list osd configure "$widget_id$children" "-$parameter" $value [subst $value]]               
-                    osd configure "$widget_id$children" "-$parameter" [subst $value]                   
+            set absolute_path [p $relative_path]
+            return [dict exists $::wm::Status widgets $absolute_path]
+        }
+
+        proc rget {relative_path} {
+            
+            set absolute_path [p $relative_path]
+            set ret {}
+            catch { set ret [dict get $::wm::Status widgets $absolute_path] }
+            return $ret
+        }
+
+
+        proc rset {args} {
+            
+            foreach {relative_path value} $args {
+                set absolute_path [p $relative_path]
+                dict set ::wm::Status widgets $absolute_path $value
+                dict set ::wm::Status to_update $absolute_path {}
+                if {[dict exists $::wm::Status widgets $absolute_path.on_set]} {
+                    regexp {^(.*)\.([^\.]*)$} $absolute_path match parent parameter
+                    ::wm::widget execute_callback $parent $parameter.on_set
                 }
             }
         }
 
-        proc add {widget_type widget_id args} {
+        proc runset {args} {
             
-            if {![dict exists $::wm::Status enabled]} {::wm::start}
-
-            if {[namespace which ${widget_type}] != {}} {
-                ${widget_type} $widget_id {*}$args
-                return
-            }            
-            
-            if {[namespace which ::wm::widgets::${widget_type}] != {}} {
-                ::wm::widgets::${widget_type} $widget_id {*}$args
-                return
+            foreach relative_path $args {
+                set absolute_path [p $relative_path]
+                if {[dict exists $::wm::Status widgets $absolute_path]} {
+                    dict unset ::wm::Status widgets $absolute_path
+                    dict unset ::wm::Status to_update $absolute_path
+                }
             }
-
-            osd create $widget_type $widget_id
-            dict set ::wm::Status widgets $widget_id [dict create]
-            
-            ::wm::widget update $widget_id {*}$args
         }
 
-        proc remove {widget_id} {
+        proc request_update {args} {
             
-            if {![dict exists $::wm::Status widgets $widget_id]} {
-                error "Trying to remove an unknown widget: $widget_id"
-                return
-            }
-                
-            dict unset ::wm::Status widgets $widget_id
-            osd destroy $widget_id
-            foreach { children_id } [dict keys [dict get $::wm::Status widgets] "${widget_id}\.*"] {
-                dict unset ::wm::Status widgets $children_id
+            if {$args=={}} {
+                set absolute_path [p]
+                foreach child_absolute_path [dict keys [dict get $::wm::Status widgets $absolute_path.*]] {
+                    dict set ::wm::Status to_update $child_absolute_path {}
+                }
+                dict set ::wm::Status to_update $absolute_path {}
+            } else {                    
+                foreach relative_path $args {
+                    set absolute_path [p $relative_path]  
+                    dict set ::wm::Status to_update $absolute_path {}
+                }
             }
         }
         
+        proc execute_osd_update {parameter value} {
+            
+            puts stderr "update! [p] $parameter [rget $parameter] $value"
 
-    }
-    
-    proc widget {command args} {
-        switch $command {
-            add    { return [widget_commands::add    {*}$args] }
-            remove { return [widget_commands::remove {*}$args] }
-            update { return [widget_commands::update {*}$args] }
+            dict with ::wm::Configuration {}
+            set absolute_path [p]
+            osd configure $absolute_path -$parameter [subst $value]                    
+            dict unset ::wm::Status to_update $absolute_path.osd_$parameter
         }
-        error "Unknown widget command: \"$command\""
+        
+        proc execute_callback {callback_id args} {
+            
+            if {[rexists $callback_id]} {
+                dict with ::wm::Configuration {}
+                eval [rget $callback_id]
+            }
+        }
+
+        proc execute_target {parameter} {
+
+            #puts stderr "target! [p]  $parameter [rget $parameter] [rget $parameter.target]"
+            
+            dict with ::wm::Configuration {}
+            set current [subst [rget $parameter]]
+            set target [subst [rget $parameter.target]]
+            if {[expr {abs($current-$target)}]>1} { 
+                rset $parameter [expr {$smoothness*$current+(1-$smoothness)*$target}]
+            } else {
+                rset $parameter [rget $parameter.target]
+                runset $parameter.target
+            }
+        }
+
+
+        proc add {widget_type args} {
+            
+            ::wm::start
+            
+            if { [rexists {}]} { error "Adding an already existing widget" }
+            if {![rexists parent]} { error "Adding an orfan widget: [p] [p parent]" }
+
+            rset inner_type $widget_type
+
+            if {[namespace which $widget_type] != {}} {
+                
+                $widget_type [p] {*}$args
+                
+            } elseif {[namespace which ::wm::widgets::$widget_type] != {}} {
+                
+                ::wm::widgets::$widget_type [p] {*}$args
+                
+            } elseif {$widget_type=="text"} {
+                
+                osd create text [p]
+                rset {} {} {*}$args
+                
+            } elseif {$widget_type=="rectangle"} {
+
+                osd create rectangle [p]
+                rset {} {} {*}$args
+            
+            } else {
+                error "Requested an unknown widget type"
+            }
+
+            if {![rexists {}]} { error "Widget not created" }
+            
+            rset outer_type $widget_type
+            
+            ::wm::widget execute_callback [p parent] on_added_child [string range [p] [expr {[string length [p parent]]+1}] end ]
+        }
+
+        proc remove {} {
+
+            execute_callback on_pre_remove
+            
+            set absolute_path [p]
+            foreach child_absolute_path [dict keys [dict get $::wm::Status widgets]] {
+                if {[regexp {^(.*)\.[^\.]*$} $child_absolute_path match parent]} {
+                    if {$parent == $absolute_path} {
+                        ::wm::widget remove $child_absolute_path
+                    }
+                }
+            }
+
+            execute_callback on_post_remove
+            
+            if {[osd exists $absolute_path]} { osd destroy $absolute_path }
+            runset $absolute_path
+        }
+        
+        proc rebase {old_path} {
+            
+            set old_path [get_absolute_path $new_path]
+            set new_path [p]
+
+            ::wm::widget execute_callback $old_path on_pre_rebase $new_path
+            
+            if { [rexists {}]} { error "Rebasing into an already existing widget" }
+            if {![rexists parent]} { error "Rebasing into an orfan widget" }
+            
+            rset {} [dict get $::wm::Status widgets $old_path]
+            if {[osd exists $old_path]} { 
+                osd create [::wm::widget rexists $old_path inner_type] $new_path
+            }
+        
+            foreach child_absolute_path [dict keys [dict get $::wm::Status widgets]] {
+                if {[regexp {^(.*)\.([^\.]*)$} $child_absolute_path match parent children]} {
+                    if {$parent == $old_path} {
+                        ::wm::widget rebase "$old_path.$children" "$new_path.$children" 
+                    }
+                }
+            }
+
+            execute_callback on_post_rebase $old_path
+
+            if {[osd exists $old_path]} { osd destroy $old_path }
+            dict unset ::wm::Status widgets $old_path
+        }
     }
 
     namespace eval widgets {
                 
-        proc dock {widget_id args} {
-            
-            ::wm::widget add rectangle $widget_id
-            ::wm::widget add rectangle $widget_id.panel
-            ::wm::widget add rectangle $widget_id.title
-            ::wm::widget add text      $widget_id.title.text
+        proc dock {path args} {
+            ::wm::widget add $path rectangle
+            ::wm::widget add $path.panel rectangle
+            ::wm::widget add $path.title rectangle 
+            ::wm::widget add $path.title.text text      
+            ::wm::widget add $path.hide toggle_button 
 
-            ::wm::widget update $widget_id \
-                -osd.x {[expr {-10*$sz}]} \
-                -target.osd.x 0 \
-                -osd.y {[expr {4*$sz}]} \
-                -osd.w {[expr {$sz*$width}]} \
-                -osd.relh 1 \
-                -osd.clip true \
-                -osd.rgba {0x00000040} \
-                -osd.title.x 0 \
-                -osd.title.y 0 \
-                -osd.title.w {[expr {($width-1)*$sz}]} \
-                -osd.title.h {[expr {1*$sz}]} \
-                -osd.title.rgba {0xFFFFFF40} \
-                -osd.title.text.text "Dock" \
-                -osd.title.text.font {$font_sans} \
-                -osd.title.text.x {[expr {1.5*$sz/6.}]} \
-                -osd.title.text.y {[expr {0.25*$sz/6.}]} \
-                -osd.title.text.size {[expr {5*$sz/6}]} \
-                -osd.title.text.rgba {0xFFFFFFFF} \
-                -osd.panel.x 0 \
-                -osd.panel.y {[expr {1*$sz}]} \
-                -osd.panel.w {[expr {($width)*$sz}]} \
-                -osd.panel.relh 1 \
-                -osd.panel.clip true \
-                -osd.panel.rgba {0x00000040} \
-                {*}$args
-
-            ::wm::widget add toggle_button $widget_id.hide \
-                -textOn  "\u25BA" \
-                -textOff "\u25C4" \
-                -on_On  { ::wm::widget update $parent_id -target.osd.x {[expr {-($width-1)*$sz}]} } \
-                -on_Off { ::wm::widget update $parent_id -target.osd.x 0 } \
-                -osd.relx 1 \
-                -osd.w {[expr {-1*$sz}]} \
-                -osd.h {[expr {1*$sz}]} \
-                -osd.text.x {[expr {1.5*$sz/6.-$sz}]} \
-                -osd.text.y {[expr {-0.25*$sz/6.}]} \
-                -osd.text.size {[expr {5*$sz/6}]} \
-                -osd.text.font {$font_mono} 
-        }
-
-        proc window {widget_id args} {
-            
-
-            ::wm::widget add rectangle $widget_id
-            ::wm::widget add rectangle $widget_id.panel
-            ::wm::widget add rectangle $widget_id.title
-            ::wm::widget add text      $widget_id.title.text
-
-            ::wm::widget update $widget_id \
-                -window_above {} \
-                -window_below {} \
-                -osd.x 0 \
-                -osd.y 0 \
-                -osd.w {[expr {$sz*$width}]} \
-                -osd.h {[expr {2*$sz+[subst ${osd.panel.h}]}]} \
-                -osd.clip true \
-                -osd.rgba {0x00000040} \
-                -osd.title.x 0 \
-                -osd.title.y 0 \
-                -osd.title.w {[expr {($width-1)*$sz}]} \
-                -osd.title.h {[expr {1*$sz}]} \
-                -osd.title.rgba {0xFFFFFF40} \
-                -osd.title.text.text "Dock" \
-                -osd.title.text.font {$font_sans} \
-                -osd.title.text.x {[expr {1.5*$sz/6.}]} \
-                -osd.title.text.y {[expr {0.25*$sz/6.}]} \
-                -osd.title.text.size {[expr {5*$sz/6}]} \
-                -osd.title.text.rgba {0xFFFFFFFF} \
-                -osd.panel.x 0 \
-                -osd.panel.h {[expr {1*$sz}]} \
-                -osd.panel.y {[expr {1*$sz}]} \
-                -osd.panel.w {[expr {($width)*$sz}]} \
-                -osd.panel.relh 1 \
-                -osd.panel.clip true \
-                -osd.panel.rgba {0x00000040} \
-                {*}$args
-
-            ::wm::widget add toggle_button $widget_id.hide \
-                -textOn  "\u25BC" \
-                -textOff "\u25B2" \
-                -on_On  { 
-                    ::wm::widget update $parent_id -target.osd.h {[expr {1*$sz}]}
-                    if {$window_below!={}} ::wm::widget update $window_below -target.osd.y {[expr {${osd.y}+1*$sz}]} 
-                } \
-                -on_Off { 
-                    ::wm::widget update $parent_id -target.osd.h {[expr {2*$sz+[subst ${osd.panel.h}]}]} 
-                    if {$window_below!={}} ::wm::widget update $window_below -target.osd.x {[expr {2*$sz}]} 
-                } \
-                -osd.relx 1 \
-                -osd.w {[expr {-1*$sz}]} \
-                -osd.h {[expr {1*$sz}]} \
-                -osd.text.x {[expr {1.5*$sz/6.-$sz}]} \
-                -osd.text.y {[expr {-0.25*$sz/6.}]} \
-                -osd.text.size {[expr {5*$sz/6}]} \
-                -osd.text.font {$font_mono} 
-        }
-
-        proc toggle_button {widget_id args} {
-            
-            ::wm::widget add button $widget_id \
-                -is_toggled 0 \
-                -textOn "On" \
-                -textOff "Off" \
-                -on_On {} \
-                -on_Off {} \
-                -on_activation { 
-                    if {$is_toggled} {
-                        dict set ::wm::Status widgets $widget_id is_toggled 0
-                        eval $on_Off
-                    } else {
-                        dict set ::wm::Status widgets $widget_id is_toggled 1
-                        eval $on_On
+            ::wm::widget rset $path \
+                first_window {} \
+                last_window {} \
+                osd_x {[expr {-10*$sz}]} \
+                osd_x.target 0 \
+                osd_y {[expr {4*$sz}]} \
+                osd_w {[expr {$sz*$width}]} \
+                osd_relh 1 \
+                osd_clip true \
+                osd_rgba 0x00000040 \
+                window_list [dict create] \
+                title.osd_x 0 \
+                title.osd_y 0 \
+                title.osd_w {[expr {($width-1)*$sz}]} \
+                title.osd_h {[expr {1*$sz}]} \
+                title.osd_rgba {0xFFFFFF40} \
+                title.text.osd_text "Dock" \
+                title.text.osd_font {$font_sans} \
+                title.text.osd_x {[expr {1.5*$sz/6.}]} \
+                title.text.osd_y {[expr {0.25*$sz/6.}]} \
+                title.text.osd_size {[expr {5*$sz/6}]} \
+                title.text.osd_rgba {0xFFFFFFFF} \
+                panel.on_added_child {
+                    lassign $args child
+                    if {[rget $child.outer_type]=="window"} {
+                        if {[rget parent.first_window]=={}} {
+                            rset parent.first_window $child
+                        } else {
+                            rset $child.prev_window [rget parent.last_window]
+                            rset [rget parent.last_window].next_window $child
+                        }
+                        rset parent.last_window $child
                     }
-                    ::wm::widget update $widget_id -osd.text.text ${osd.text.text}
                 } \
-                -osd.text.text {[expr {$is_toggled?$textOn:$textOff}]} \
+                panel.osd_x 0 \
+                panel.osd_y {[expr {1*$sz}]} \
+                panel.osd_w {[expr {($width)*$sz}]} \
+                panel.osd_relh 1 \
+                panel.osd_clip true \
+                panel.osd_rgba {0x00000040} \
+                hide.textOn  "\u25BA" \
+                hide.textOff "\u25C4" \
+                hide.on_On  { rset parent.osd_x.target {[expr {-($width-1)*$sz}]} } \
+                hide.on_Off { rset parent.osd_x.target 0 } \
+                hide.osd_relx 1 \
+                hide.osd_w {[expr {-1*$sz}]} \
+                hide.osd_h {[expr {1*$sz}]} \
+                hide.text.osd_x {[expr {1.5*$sz/6.-$sz}]} \
+                hide.text.osd_y {[expr {-0.25*$sz/6.}]} \
+                hide.text.osd_size {[expr {5*$sz/6}]} \
+                hide.text.osd_font {$font_mono} \
+                {*}$args
+
+        }
+
+        proc window {path args} {
+            
+            ::wm::widget add $path rectangle
+            ::wm::widget add $path.panel rectangle
+            ::wm::widget add $path.title rectangle 
+            ::wm::widget add $path.title.text text      
+            ::wm::widget add $path.hide toggle_button 
+
+            ::wm::widget rset $path \
+                osd_x 0 \
+                osd_y 0 \
+                osd_y.on_set {
+                    if {[rexists next_window]} {
+                        puts stderr "Why? [p] rset parent.[rget next_window].osd_y [expr {[subst [rget osd_y]]+[subst [rget osd_h]]}]"
+                        rset parent.[rget next_window].osd_y [expr {[subst [rget osd_y]]+[subst [rget osd_h]]}]
+                    }
+                } \
+                osd_w {[expr {$sz*$width}]} \
+                osd_h {[expr {1*$sz}]} \
+                osd_h.target {[expr {2*$sz+[subst [rget panel.osd_h]]}]} \
+                osd_h.on_set {
+                    if {[rexists next_window]} {
+                        puts stderr "osd_h? [p] rset parent.[rget next_window].osd_y [expr {[subst [rget osd_y]]+[subst [rget osd_h]]}]"
+                        rset parent.[rget next_window].osd_y [expr {[subst [rget osd_y]]+[subst [rget osd_h]]}]
+                    }
+                } \
+                osd_clip true \
+                osd_rgba 0x00000040 \
+                title.osd_x 0 \
+                title.osd_y 0 \
+                title.osd_w {[expr {($width-0.9)*$sz}]} \
+                title.osd_h {[expr {1*$sz}]} \
+                title.osd_bordersize {[expr {0.1*$sz}]} \
+                title.osd_borderrgba {0x404040FF} \
+                title.osd_rgba {0x808080FF} \
+                title.text.osd_text "Dock" \
+                title.text.osd_font {$font_sans} \
+                title.text.osd_x {[expr {1.5*$sz/6.}]} \
+                title.text.osd_y {[expr {0.25*$sz/6.}]} \
+                title.text.osd_size {[expr {5*$sz/6}]} \
+                title.text.osd_rgba {0x404040FF} \
+                panel.osd_x 0 \
+                panel.osd_y {[expr {1*$sz}]} \
+                panel.osd_w {[expr {($width-1)*$sz}]} \
+                panel.osd_h {[expr {5*$sz}]} \
+                panel.osd_clip true \
+                panel.osd_rgba {0x40404040} \
+                hide.textOn  "\u25BC" \
+                hide.textOff "\u25B2" \
+                hide.on_On  { puts stderr "asdf"; ::wm::widget rset [p parent] osd_h.target {[expr {1*$sz}]} } \
+                hide.on_Off { puts stderr "asdf"; ::wm::widget rset [p parent] osd_h.target {[expr {2*$sz+[subst [rget panel.osd_h]]}]} } \
+                hide.osd_relx 1 \
+                hide.osd_w {[expr {-1*$sz}]} \
+                hide.osd_h {[expr {1*$sz}]} \
+                hide.text.osd_x {[expr {1.5*$sz/6.-$sz}]} \
+                hide.text.osd_y {[expr {-0.25*$sz/6.}]} \
+                hide.text.osd_size {[expr {5*$sz/6}]} \
+                hide.text.osd_font {$font_mono} \
                 {*}$args
         }
 
-        proc button {widget_id args} {
-
-            ::wm::widget add rectangle $widget_id 
-            ::wm::widget add text $widget_id.text
+        proc toggle_button {path args} {
             
-            ::wm::widget update $widget_id \
-                -osd.w {[expr {4*$sz}]} \
-                -osd.h {[expr {1*$sz}]} \
-                -osd.bordersize {[expr {0.1*$sz}]} \
-                -osd.borderrgba {0x404040FF} \
-                -osd.rgba {0x808080FF} \
-                -osd.text.text "Button" \
-                -osd.text.font {$font_sans} \
-                -osd.text.x {[expr {1.5*$sz/6.}]} \
-                -osd.text.y {[expr {0.25*$sz/6.}]} \
-                -osd.text.size {[expr {5*$sz/6}]} \
-                -osd.text.rgba {0x404040FF} \
-                -on_press   { ::wm::widget update $widget_id -osd.rgba 0xC0C0C0FF } \
-                -on_release { ::wm::widget update $widget_id -osd.rgba 0x808080FF } \
+            ::wm::widget add $path button 
+            
+            ::wm::widget rset $path \
+                is_toggled 0 \
+                textOn "On" \
+                textOff "Off" \
+                on_On {} \
+                on_Off {} \
+                on_activation { 
+                    if {[rget is_toggled]} {
+                        rset is_toggled 0
+                        puts stderr off[rget on_Off]
+                        eval [rget on_Off]
+                    } else {
+                        rset is_toggled 1
+                        puts stderr On[rget on_On]
+                        eval [rget on_On]
+                    }
+                    request_update text.osd_text
+                } \
+                text.osd_text {[expr {[rget parent.is_toggled]?[rget parent.textOn]:[rget parent.textOff]}]} \
+                {*}$args
+        }
+
+        proc button {path args} {
+
+            ::wm::widget add $path rectangle  
+            ::wm::widget add $path.text text 
+            
+            ::wm::widget rset $path \
+                osd_w {[expr {4*$sz}]} \
+                osd_h {[expr {1*$sz}]} \
+                osd_bordersize {[expr {0.1*$sz}]} \
+                osd_borderrgba {0x404040FF} \
+                osd_rgba {0x808080FF} \
+                text.osd_text "Button" \
+                text.osd_font {$font_sans} \
+                text.osd_x {[expr {1.5*$sz/6.}]} \
+                text.osd_y {[expr {0.25*$sz/6.}]} \
+                text.osd_size {[expr {5*$sz/6}]} \
+                text.osd_rgba {0x404040FF} \
+                is_clickable {} \
+                on_mouse_button1_down { rset osd_rgba 0xC0C0C0FF } \
+                on_mouse_button1_up   { rset osd_rgba 0x808080FF } \
                 {*}$args
             
         }
@@ -253,46 +426,23 @@ namespace eval wm {
 
     namespace eval callbacks {
 
-        namespace eval util {
-            
-            proc callback {widget_id callback_id} {
-                
-                #We use the side effect of dict with: all keys get mapped as variables
-                                    
-                if {[dict exists $::wm::Status widgets $widget_id "on_$callback_id"]} {
-
-                    regexp {^(.*)[\.][^\.]*$} $widget_id match parent_id
-                    dict with ::wm::Configuration {}
-                    dict with ::wm::Status widgets $widget_id {}
-                    
-                    eval [dict get $::wm::Status widgets $widget_id "on_$callback_id"]
-                }
-            }        
-        }
-
         proc upkeep {} {
 
-            if {![dict exists $::wm::Status enabled]} {start}
+            if {![dict exists $::wm::Status widgets wm]} { return }
             
-            dict for {widget_id widget} [dict get $::wm::Status widgets] {
-                util::callback $widget_id upkeep
+            foreach path [dict keys [dict get $::wm::Status widgets]] {
+                if {[regexp {^(.*)\.on_upkeep$} $path match parent]} {
+                    ::wm::widget execute_callback $parent on_upkeep
+                }
 
-                foreach {key} [dict keys $widget {target.*}] {
-                    if {[regexp {^target[.](.*)$} $key match sub_key]} {
-
-                        regexp {^(.*)[\.][^\.]*$} $widget_id match parent_id
-                        dict with ::wm::Configuration {}
-                        dict with ::wm::Status widgets $widget_id {}
-                        
-                        set current [subst [dict get $widget $sub_key]]
-                        set target [subst [dict get $widget $key]]
-                        if {[expr {abs($current-$target)}]>1} {                            
-                            ::wm::widget update $widget_id "-$sub_key" [expr {$smoothness*$current+(1-$smoothness)*$target}]
-                        } else {
-                            ::wm::widget update $widget_id "-$sub_key" [dict get $widget $key]
-                            dict unset ::wm::Status widgets $widget_id $key
-                        }
-                    }
+                if {[regexp {^(.*)\.([^\.]*)\.target$} $path match parent parameter]} {
+                    ::wm::widget execute_target $parent $parameter
+                }
+            }
+            
+            foreach global_path [dict keys [dict get $::wm::Status to_update]] {
+                if {[regexp {^(.*)\.osd_([^\.]*)$} $global_path global_path osd_id parameter]} {
+                    ::wm::widget execute_osd_update $osd_id $parameter [dict get $::wm::Status widgets $global_path]
                 }
             }
             
@@ -302,12 +452,14 @@ namespace eval wm {
 
         proc on_mouse_button1_down {} {
             
-            if {![dict exists $::wm::Status enabled]} return
+            if {![dict exists $::wm::Status widgets wm]} { return }
 
-            dict for {widget_id widget} [dict get $::wm::Status widgets] {
-                if {[is_mouse_over $widget_id]==1} {
-                    dict set ::wm::Status widgets $widget_id activated 1
-                    util::callback $widget_id press
+            foreach path [dict keys [dict get $::wm::Status widgets]] {
+                if {[regexp {^(.*)\.is_clickable$} $path match parent]} {
+                    if {[is_mouse_over $parent]==1} {
+                        ::wm::widget rset $parent is_pressed {}
+                        ::wm::widget execute_callback $parent on_mouse_button1_down
+                    }                                        
                 }
             }
             after "mouse button1 down" ::wm::callbacks::on_mouse_button1_down
@@ -315,37 +467,44 @@ namespace eval wm {
 
         proc on_mouse_button1_up {} {
             
-            if {![dict exists $::wm::Status enabled]} return
+            if {![dict exists $::wm::Status widgets wm]} { return }
+            
 
-            dict for {widget_id widget} [dict get $::wm::Status widgets] {
+            foreach path [dict keys [dict get $::wm::Status widgets]] {
+                if {[regexp {^(.*)\.is_clickable$} $path match parent]} {
 
-                if {[is_mouse_over $widget_id] && [dict get $::wm::Status widgets $widget_id activated]} {
-                    util::callback $widget_id activation
+                    if {[::wm::widget rexists $parent is_pressed]} {
+                        if {[is_mouse_over $parent]} {
+                            ::wm::widget execute_callback $parent on_activation
+                        }
+                        ::wm::widget execute_callback $parent on_mouse_button1_up
+                        ::wm::widget runset $parent is_pressed
+                    }
                 }
-                dict set ::wm::Status widgets $widget_id activated 0
-                util::callback $widget_id release
             }
             after "mouse button1 up" ::wm::callbacks::on_mouse_button1_up
         }
 
         proc on_mouse_motion {} {
             
-            if {![dict exists $::wm::Status enabled]} return
+            if {![dict exists $::wm::Status widgets wm]} { return }
 
-            dict for {widget_id widget} [dict get $::wm::Status widgets] {
-                if {[is_mouse_over $widget_id]} {
-                    util::callback $widget_id hover
+            foreach path [dict keys [dict get $::wm::Status widgets]] {
+                if {[regexp {^(.*)\.is_clickable$} $path match parent]} {
+                    if {[is_mouse_over $parent]==1} {
+                        ::wm::widget execute_callback $parent on_mouse_motion
+                    }
                 }
             }
             after "mouse motion" ::wm::callbacks::on_mouse_motion
-       }
+        }
 
-        proc is_mouse_over {widget_id} {
+        proc is_mouse_over {id} {
             
             set ret 0
-            if {[osd exists $widget_id]} {
+            if {[osd exists $id]} {
                 catch {
-                    lassign [osd info $widget_id -mousecoord] x y
+                    lassign [osd info $id -mousecoord] x y
                     if {($x >= 0) && ($x <= 1) && ($y >= 0) && ($y <= 1)} {
                         set ret 1
                     }

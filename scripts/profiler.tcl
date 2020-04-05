@@ -679,32 +679,26 @@ namespace eval profiler {
         
         proc start {} {
 
-            ::wm::widget add rectangle "profiler" -osd.relw 1 -osd.relh 1 -osd.rgba 0x00000000 -osd.clip true
+            ::wm::widget add "wm.profiler" rectangle osd_relw 1 osd_relh 1 osd_rgba 0x00000000 osd_clip true
 
-            ::wm::widget add dock "profiler.dock" 
+            ::wm::widget add "wm.profiler.dock" dock 
             
-            ::wm::widget add ::profiler::gui::widgets::control_window "profiler.dock.panel.control" 
-            ::wm::widget add ::profiler::gui::widgets::all_tag_window "profiler.dock.panel.all_tags" 
+            ::wm::widget add "wm.profiler.dock.panel.control" ::profiler::gui::widgets::control_window 
+            ::wm::widget add "wm.profiler.dock.panel.all_tags" ::profiler::gui::widgets::all_tag_window 
         }
         
         namespace eval widgets {
 
-            proc control_window {widget_id args} {
+            proc control_window {path args} {
             
-                ::wm::widget add window $widget_id \
-                    -osd.title.text.text "Controls" \
-                    -on_upkeep {
-                        
-                    }
+                ::wm::widget add $path window  \
+                    title.text.osd_text "Controls"
             }          
 
-            proc all_tag_window {widget_id args} {
+            proc all_tag_window {path args} {
             
-                ::wm::widget add window $widget_id \
-                    -osd.title.text.text "All Detected Tags" \
-                    -on_upkeep {
-                        
-                    }
+                ::wm::widget add $path window \
+                    title.text.osd_text "All Detected Tags"
             }          
         }
     }
