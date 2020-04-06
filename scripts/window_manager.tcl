@@ -91,7 +91,7 @@ namespace eval wm {
             regexp {^(.*)\.([^\.]*)$} $absolute_path match parent parameter
             
             set old_base_path $::wm::widget_methods::base_path
-            set $::wm::widget_methods::base_path $parent
+            set ::wm::widget_methods::base_path $parent
 
             set ret {}
             catch { set ret [dict get $::wm::Status widgets $absolute_path] }
@@ -106,6 +106,7 @@ namespace eval wm {
         proc reval {relative_path args} {
             
             if {![rexists $relative_path]} {return}
+            
 
             set absolute_path [p $relative_path]
             regexp {^(.*)\.([^\.]*)$} $absolute_path match parent parameter
@@ -114,6 +115,7 @@ namespace eval wm {
             set ::wm::widget_methods::base_path $parent
 
             dict with ::wm::Configuration {}
+            #puts stderr "REVAL: [dict get $::wm::Status widgets $absolute_path]"
             set ret [eval [dict get $::wm::Status widgets $absolute_path]]
 
             set ::wm::widget_methods::base_path $old_base_path
@@ -126,7 +128,8 @@ namespace eval wm {
                 set absolute_path [p $relative_path]
                 dict set ::wm::Status widgets $absolute_path $value
                 dict set ::wm::Status to_update $absolute_path {}
-                reval $absolute_path.on_set $value
+                #if {[rexists ${relative_path}_on_set]} {puts stderr "TRying $relative_path _on_set" }
+                reval ${relative_path}_on_set $value
             }
         }
 
@@ -277,7 +280,7 @@ namespace eval wm {
                 title.text.osd_rgba {0x808080FF} \
                 panel.on_added_child {
                     lassign $args child
-                    puts stderr "AAA: [p]"
+                    puts stderr "AAA: [p] [rget $child.outer_type]"
                     if {[rget $child.outer_type]=="docked_window"} {
                         if {[rget parent.first_window]=={}} {
                             rset parent.first_window $child
@@ -316,11 +319,11 @@ namespace eval wm {
 
             ::wm::widget rset $path \
                 offset 0.25 \
-                offset.on_set { request_osd_refresh bar.osd_y bar.osd_h } \
+                offset_on_set { request_osd_refresh bar.osd_y bar.osd_h } \
                 visible_range 0.5 \
-                visible_range.on_set { request_osd_refresh bar.osd_y bar.osd_h } \
+                visible_range_on_set { request_osd_refresh bar.osd_y bar.osd_h } \
                 total_range 1 \
-                total_range.on_set { request_osd_refresh bar.osd_y bar.osd_h } \
+                total_range_on_set { request_osd_refresh bar.osd_y bar.osd_h } \
                 osd_x 0 \
                 osd_y 0 \
                 osd_w {[expr {1*$sz}]} \
@@ -372,7 +375,7 @@ namespace eval wm {
                 visible__height {[expr {3*$sz}]} \
                 osd_x 0 \
                 osd_y 0 \
-                osd_y.on_set {
+                osd_y_on_set {
                     if {[rexists next_window]} {
                         puts stderr "Why? [p] rset parent.[rget next_window].osd_y [expr {[subst [rget osd_y]]+[subst [rget osd_h]]}]"
                         rset parent.[rget next_window].osd_y [expr {[rsub osd_y]+[rsub osd_h]}]
@@ -381,7 +384,7 @@ namespace eval wm {
                 osd_w {[expr {$sz*$width}]} \
                 osd_h {[expr {1*$sz}]} \
                 osd_h_autoupdate {[expr {2*$sz+[subst [rget visible__height]]}]} \
-                osd_h.on_set {
+                osd_h_on_set {
                     if {[rexists next_window]} {
                         puts stderr "osd_h? [p] rset parent.[rget next_window].osd_y [expr {[subst [rget osd_y]]+[subst [rget osd_h]]}]"
                         rset parent.[rget next_window].osd_y [expr {[rsub osd_y]+[rsub osd_h]}]
@@ -405,13 +408,12 @@ namespace eval wm {
                 panel.osd_x 0 \
                 panel.osd_y {[expr {1*$sz}]} \
                 panel.osd_w {[expr {($width-1)*$sz}]} \
-                panel.osd_h {[expr {5*$sz}]} \
-                panel.osd_h.on_set {
+                panel.osd_h_on_set {
                     lassign $args value
-                    rset parent.hide.on_Off {
-                        rset parent.osd_h_autoupdate "\{\[expr \{2*\$sz+$value\}\]\}"
-                    }
+                    puts stderr "OSD_H on_set [p] $value rset parent.osd_h_autoupdate \{\[expr \{2*\$sz+$value\}\]\}"
+                    rset parent.hide.on_Off "rset parent.osd_h_autoupdate \{\[expr \{2*\$sz+$value\}\]\}"
                 } \
+                panel.osd_h {[expr {5*$sz}]} \
                 panel.osd_clip true \
                 panel.osd_rgba {0x40404040} \
                 hide.textOn  "\u25BC" \
@@ -508,7 +510,8 @@ namespace eval wm {
             }
             
             foreach global_path [dict keys [dict get $::wm::Status to_update]] {
-                if {[regexp {^(.*)\.osd_([^\.]*)$} $global_path global_path osd_id parameter]} {
+                if {[regexp {^(.*)\.osd_([^\._]*)$} $global_path global_path osd_id parameter]} {
+                    #puts stderr "Updating $osd_id $parameter [::wm::widget rsub $global_path {}]"
                     osd configure $osd_id -$parameter [::wm::widget rsub $global_path {}]
                 }
             }
