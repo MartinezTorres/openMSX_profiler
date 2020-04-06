@@ -691,13 +691,13 @@ namespace eval profiler {
 
             proc control_window {path args} {
             
-                ::wm::widget add $path window  \
+                ::wm::widget add $path docked_window  \
                     title.text.osd_text "Controls"
             }          
 
             proc all_tag_window {path args} {
             
-                ::wm::widget add $path window \
+                ::wm::widget add $path docked_window \
                     title.text.osd_text "All Detected Tags"
             }          
         }
