@@ -67,25 +67,25 @@ namespace eval profiler {
             ]}
 
             proc Tag {} { return [dict create \
-                    hash {} \
-                    debug_cb [dict create] \
-                    profiler_level 0 \
-                    disabled 0 \
-                    count 0 \
-                    depth 0 \
-                    previous_time_between_invocations 0 \
-                    previous_occupation 0 \
-                    previous_ts_begin 0 \
-                    previous_ts_end 0 \
-                    previous_duration 0 \
-                    previous_log [dict create] \
-                    current_log [dict create] \
-                    max_duration 0 \
-                    avg_duration 0 \
-                    max_time_between_invocations 0 \
-                    avg_time_between_invocations 0 \
-                    max_occupation 0 \
-                    avg_occupation 0 \
+                hash {} \
+                debug_cb [dict create] \
+                profiler_level 0 \
+                disabled 0 \
+                count 0 \
+                depth 0 \
+                previous_time_between_invocations 0 \
+                previous_occupation 0 \
+                previous_ts_begin 0 \
+                previous_ts_end 0 \
+                previous_duration 0 \
+                previous_log [dict create] \
+                current_log [dict create] \
+                max_duration 0 \
+                avg_duration 0 \
+                max_time_between_invocations 0 \
+                avg_time_between_invocations 0 \
+                max_occupation 0 \
+                avg_occupation 0 \
             ]}
         }
 
@@ -255,7 +255,7 @@ namespace eval profiler {
                         return 
                     }
 
-                    if {$profiler_level < 2 && $ts_end-$ts_begin < 0.0020} { 
+                    if {$profiler_level < 2 && $ts_end-$ts_begin < 0.0050} { 
 
                         set log_idx [dict get $Status log_idx]
                         dict for {sub_id sub_ts_begin} [dict get $Status active_tags] {
@@ -687,6 +687,115 @@ namespace eval profiler {
             ::wm::widget add "wm.profiler.dock.panel.all_tags" ::profiler::gui::widgets::all_tag_window 
         }
         
+
+        namespace eval util {
+            if {0} {
+            namespace util sort {
+                # Update All and Favorite Sections
+                proc sort_sections {ids} {
+                
+                    variable config
+                    if {[dict get $config sorting_criteria] == "avg"} {
+                        proc compare {a b} {
+                            variable sections
+                            set a0 [dict get $sections $a section_time_avg]
+                            set b0 [dict get $sections $b section_time_avg]
+                            if {$a0 > $b0} { return -1 } elseif {$a0 < $b0} { return 1 }
+                            return [string compare $b $a]
+                        }
+                        set ids [lsort -command compare $ids]
+                    }
+                    return $ids
+                }
+            }
+
+
+            namespace eval units {
+
+                proc to_unit {seconds} {
+                    variable config
+                    set unit [dict get $config unit]
+
+                    if {$unit eq "s"} {
+                        return [format "%5.3f s" [expr {$seconds}]]
+                    } elseif {$unit eq "ms"} {
+                        return [format "%5.2f ms" [expr {$seconds * 1000}]]
+                    } elseif {$unit eq "t"} {
+                        set cpu [get_active_cpu]
+                        return [format "%5d T" [expr {round($seconds * [machine_info ${cpu}_freq])}]]
+                    } elseif {$unit eq "lines"} {
+                        return [format "%5.1f lines" [expr {$seconds * 3579545 / 228}]]
+                    } else {
+                        return [format "%5.1f%%" [expr 100 * $seconds / [get_VDP_frame_duration]]]
+                    }
+                }            
+            }
+
+            }
+        
+            proc get_tag_rgba {tag_id} {
+                
+                if {[dict exists $::wm::Status tag_rgba $tag_id]} {
+                    return [dict get $::wm::Status tag_rgba $tag_id]
+                }
+                
+            
+                proc yuva_to_rgba {y u v a} {
+
+                    proc fraction_to_uint8 {value} {
+                        set value [expr {round($value * 255)}]
+                        expr {$value > 255 ? 255 : $value < 0 ? 0 : $value}
+                    }
+                    
+                    set r [fraction_to_uint8 [expr {$y + 1.28033 * 0.615 * $v}]]
+                    set g [fraction_to_uint8 [expr {$y - 0.21482 * 0.436 * $u - 0.38059 * 0.615 * $v}]]
+                    set b [fraction_to_uint8 [expr {$y + 2.12798 * 0.436 * $u}]]
+                    set a [fraction_to_uint8 $a]
+                    expr {$r << 24 | $g << 16 | $b << 8 | $a}
+                }        
+
+                set idx [zlib crc32 $tag_id]                
+                set h [expr $idx / 7.]
+                set y [expr 0.20 + 0.2 * ($idx % 2) ]
+                set a 1
+                
+                set h [expr {($h - floor($h)) * 8.0}]
+                set rgba [yuva_to_rgba $y [expr {$h < 2.0 ? -1.0 : $h < 4.0 ? $h - 3.0 : $h < 6.0 ? 1.0 : 7.0 - $h}] \
+                            [expr {$h < 2.0 ? $h - 1.0 : $h < 4.0 ? 1.0 : $h < 6.0 ? 5.0 - $h : -1.0}] $a]
+                
+                if {![dict exists $::wm::Status tag_rgba]} {
+                    dict exists ::wm::Status tag_rgba [dict create]                    
+                }
+                dict set ::wm::Status tag_rgba $rgba
+                
+                return $rgba
+            }
+
+
+            proc clamp01 {val} { return [expr {$val<0?0:$val>1?1:$val}] }
+
+            namespace eval vdp {
+
+                proc get_frame_duration {} {
+                    expr {(1368.0 * (([vdpreg 9] & 2) ? 313 : 262)) / (6 * 3579545)}
+                }
+
+                proc get_start_of_frame_time {} {
+                    expr {[machine_info time] - [machine_info VDP_cycle_in_frame] / (6.0 * 3579545)}
+                }
+                proc get_time_since_VDP_start {} {
+                    expr {[machine_info VDP_cycle_in_frame] / (6.0 * 3579545)}
+                }   
+            }
+            
+
+
+    ########################################################################                
+
+        }        
+        
+        
+        
         namespace eval widgets {
 
             proc control_window {path args} {
@@ -697,9 +806,155 @@ namespace eval profiler {
 
             proc all_tag_window {path args} {
             
-                ::wm::widget add $path docked_window \
-                    title.text.osd_text "All Detected Tags"
-            }          
+                ::wm::widget add $path docked_window
+                
+            
+                ::wm::widget rset $path \
+                    title.text.osd_text "All Detected Tags" \
+                    panel.on_upkeep { apply { {} { namespace eval ::wm::widget_methods {
+                            
+                            dict with ::wm::Configuration {}
+                            namespace upvar ::profiler::core Status Status
+                            set tag_ids [dict keys [dict get $Status Tags]]
+                            
+                            set current_ts [machine_info time]
+                            set tag_widths [list]
+                            foreach tag_id $tag_ids {
+                                if {[dict get $Status Tags $tag_id profiler_level]>1} {
+                                    if {[dict get $Status Tags $tag_id previous_ts_end] > $current_ts-5} {
+                                        lappend tag_widths $tag_id [expr {[dict get $::profiler::core::Status Tags $tag_id avg_duration]/[::profiler::gui::util::vdp::get_frame_duration]}]
+                                    }
+                                }
+                            }
+
+                            if {![rexists active_tags]} {rset active_tags [dict create]}                            
+                            set active_tags [rget active_tags]
+
+                            set idx 0
+                            foreach {tag_id width} [lsort -real -decreasing -stride 2 -index 1 $tag_widths] {
+                                
+                                dict incr active_tags $tag_id
+                                if {[dict get $active_tags $tag_id]==1} {
+                                    dict incr active_tags $tag_id
+                                    ::wm::widget add [p].$tag_id ::profiler::gui::widgets::info_bar $tag_id
+                                }
+                                rset $tag_id.osd_y_autoupdate [expr {$idx*$sz}]
+                                rset $tag_id.bar.osd_relw [::profiler::gui::util::clamp01 $width]
+                                incr idx
+                                if {$idx>10} { break }
+                            }
+
+                            dict for {tag_id val} $active_tags {
+                                
+                                dict incr active_tags $tag_id -1
+
+                                if {$val==1} {
+                                    dict unset active_tags $tag_id
+                                    ::wm::widget remove [p].$tag_id
+                                }
+                            }
+                            
+                            rset active_tags $active_tags
+                            if {$idx==0} {set idx 1}
+                            rset osd_h [expr {$idx*$sz}]
+                        }
+                    }}} \
+                    {*}$args
+                    
+            }
+    
+            proc info_bar {path tag_id args} {
+                
+                ::wm::widget add $path rectangle                    
+                ::wm::widget add $path.bar rectangle
+                ::wm::widget add $path.tag_id text
+
+                ::wm::widget rset $path \
+                    tag_id $tag_id \
+                    osd_y {[expr {-2*$sz}]} \
+                    osd_w {[rsub parent.osd_w]} \
+                    osd_h {$sz} \
+                    osd_clip true \
+                    osd_rgba 0x00000080 \
+                    bar.osd_h {$sz} \
+                    bar.osd_relw 0.25 \
+                    bar.osd_rgba [::profiler::gui::util::get_tag_rgba $tag_id] \
+                    tag_id.osd_font {$font_sans} \
+                    tag_id.osd_x {[expr {1.5*$sz/6.}]} \
+                    tag_id.osd_y {[expr {0.25*$sz/6.}]} \
+                    tag_id.osd_size {[expr {5*$sz/6}]} \
+                    tag_id.osd_rgba {0xC0C0C0FF} \
+                    tag_id.osd_text $tag_id \
+                    {*}$args
+                    
+                
+                if {0} {
+                osd create rectangle $parent.$id.favorite -x [expr 0*$h] -h $h -w $h -rgba 0x00000000
+                osd create text $parent.$id.favorite.text -x [expr 0.125*$h] -y [expr  0.125*$h/6.] -size [expr 5*$h/6] -rgba 0xffffffff -font $fs  -text "\u2606"
+                gui_add_button $parent.$id.favorite \
+                    "eval { osd configure $parent.$id.favorite -rgba 0xFFFFFF40 } " \
+                    "eval { osd configure $parent.$id.favorite -rgba 0xFFFFFF00 } " \
+                    "variable config
+                    if {\[dict exist \$config favorite_sections $id]} {
+                        dict unset config favorite_sections $id
+                    } else {
+                        dict set config favorite_sections $id 1
+                    }" \
+                    "variable config
+                    if {\[dict exist \$config favorite_sections $id]} {
+                        osd configure $parent.$id.favorite.text -text \"\\u2605\"
+                    } else {
+                        osd configure $parent.$id.favorite.text -text \"\\u2606\"
+                    }
+                    set target \[expr \[dict get \$config $parent.ordering $id]*\[dict get \$config height]]
+                    osd configure $parent.$id -y \[expr {0.6*\[osd info $parent.$id -y]+0.4*\$target}]
+                    " \
+                    "Add/Remove $id to the favorites list" 
+
+
+                osd create rectangle $parent.$id.select -x [expr 1*$h] -h $h -w $h -rgba 0x00000000
+                osd create text $parent.$id.select.text -x [expr 0.125*$h] -y [expr -0.125*$h/6.] -size [expr 5*$h/6] -rgba 0xffffffff -font $fs  -text "\u25CE"
+                gui_add_button $parent.$id.select \
+                    "osd configure $parent.$id.select -rgba 0xFFFFFF40 " \
+                    "osd configure $parent.$id.select -rgba 0xFFFFFF00 " \
+                    "eval { 
+                    variable config
+                    dict set config selected_section \"$id\" 
+                    gui_update_details \"$id\"
+                    } " \
+                    "eval { 
+                    variable config                        
+                    if { \[dict get \$config selected_section] == \"$id\" } {
+                        osd configure $parent.$id.select.text -text \"\\u25C9\"
+                    } else {
+                        osd configure $parent.$id.select.text -text \"\\u25CE\"
+                    } }" \
+                    "Select $id to be analized in detail" 
+
+                osd create rectangle $parent.$id.avg -x [expr 2*$h] -h $h -w [expr 5*$h] -rgba 0x00000000
+                osd create text $parent.$id.avg.text -x [expr 0.125*$h] -y [expr 0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fm
+                gui_add_button $parent.$id.avg "" "" "" \
+                    "variable sections
+                    set section_time_avg \[dict get \$sections $id section_time_avg]
+                    osd configure $parent.$id.avg.text -text \[format \"avg:%s\" \[gui_to_unit \$section_time_avg]]
+                    proc clamp01 {val} { set v \[expr \$val]; return \[expr \$v<0?0:\$v>1?1:\$v] }
+                    osd configure $parent.$id.bar -w \[expr \[osd info $parent.$id -w]*\[clamp01 \$section_time_avg/\[get_VDP_frame_duration]]] " \
+                    "Average duration of section: $id" 
+                
+                osd create rectangle $parent.$id.max -x [expr 7*$h] -h $h -w [expr 5*$h] -rgba 0x00000000
+                osd create text $parent.$id.max.text -x [expr 0.125*$h] -y [expr 0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fm
+                gui_add_button $parent.$id.max \
+                    "osd configure $parent.$id.max -rgba 0xFFFFFF40 " \
+                    "osd configure $parent.$id.max -rgba 0xFFFFFF00 " \
+                    "variable sections \n dict set sections $id section_time_max 0" \
+                    "variable sections
+                    osd configure $parent.$id.max.text -text \[format \"max:%s\" \[gui_to_unit \[dict get \$sections $id section_time_max]]]" \
+                    "Maximum duration of section: $id
+                    Click to reset." 
+
+                
+                }
+            }
         }
     }
 
@@ -1196,126 +1451,6 @@ namespace eval profiler {
                 
             }
             
-            namespace eval util {
-
-                namespace util sort {
-                    # Update All and Favorite Sections
-                    proc sort_sections {ids} {
-                    
-                        variable config
-                        if {[dict get $config sorting_criteria] == "avg"} {
-                            proc compare {a b} {
-                                variable sections
-                                set a0 [dict get $sections $a section_time_avg]
-                                set b0 [dict get $sections $b section_time_avg]
-                                if {$a0 > $b0} { return -1 } elseif {$a0 < $b0} { return 1 }
-                                return [string compare $b $a]
-                            }
-                            set ids [lsort -command compare $ids]
-                        }
-                        return $ids
-                    }
-                }
-
-                namespace eval vdp {
-
-                    set_help_text profiler::get_VDP_frame_duration [join {
-                        "Usage: profiler::get_VDP_frame_duration\n"
-                        "Returns the duration, in seconds, of the VDP frame."
-                    } {}]
-                    proc get_VDP_frame_duration {} {
-                        expr {(1368.0 * (([vdpreg 9] & 2) ? 313 : 262)) / (6 * 3579545)}
-                    }
-
-                    set_help_text profiler::get_start_of_VDP_frame_time [join {
-                        "Usage: profiler::get_start_of_VDP_frame_time\n"
-                        "Returns the time, in seconds, of the start of the VDP last frame."
-                    } {}]
-                    proc get_start_of_VDP_frame_time {} {
-                        expr {[machine_info time] - [machine_info VDP_cycle_in_frame] / (6.0 * 3579545)}
-                    }
-                    
-                    set_help_text profiler::get_time_since_VDP_start [join {
-                        "Usage: profiler::get_time_since_VDP_start\n"
-                        "Returns the time that has passed, in seconds, since the start of the last VDP start."
-                    } {}]
-                    proc get_time_since_VDP_start {} {
-                        expr {[machine_info VDP_cycle_in_frame] / (6.0 * 3579545)}
-                    }   
-                }
-                
-
-
-        ########################################################################                
-
-                namespace eval units {
-
-                    proc to_unit {seconds} {
-                        variable config
-                        set unit [dict get $config unit]
-
-                        if {$unit eq "s"} {
-                            return [format "%5.3f s" [expr {$seconds}]]
-                        } elseif {$unit eq "ms"} {
-                            return [format "%5.2f ms" [expr {$seconds * 1000}]]
-                        } elseif {$unit eq "t"} {
-                            set cpu [get_active_cpu]
-                            return [format "%5d T" [expr {round($seconds * [machine_info ${cpu}_freq])}]]
-                        } elseif {$unit eq "lines"} {
-                            return [format "%5.1f lines" [expr {$seconds * 3579545 / 228}]]
-                        } else {
-                            return [format "%5.1f%%" [expr 100 * $seconds / [get_VDP_frame_duration]]]
-                        }
-                    }            
-                }
-
-                namespace eval color {
-
-                    proc gui_get_color {id} {
-                        
-                        variable config
-                        if {[dict exists $config section_color $id]} {
-                            set idx [dict get $config section_color $id]
-                        } else {
-                            set idx [dict get $config next_color]
-                            dict incr config next_color
-                            dict set config section_color $id $idx
-                        } 
-
-                        proc fraction_to_uint8 {value} {
-                            set value [expr {round($value * 255)}]
-                            expr {$value > 255 ? 255 : $value < 0 ? 0 : $value}
-                        }
-                        
-                        set h [expr $idx / 7.]
-                        set y [expr 0.20 + 0.2 * ($idx % 2) ]
-                        set a 1
-                    
-                        proc gui_yuva {y u v a} {
-                            
-                            
-                            set r [fraction_to_uint8 [expr {$y + 1.28033 * 0.615 * $v}]]
-                            set g [fraction_to_uint8 [expr {$y - 0.21482 * 0.436 * $u - 0.38059 * 0.615 * $v}]]
-                            set b [fraction_to_uint8 [expr {$y + 2.12798 * 0.436 * $u}]]
-                            set a [fraction_to_uint8 $a]
-                            expr {$r << 24 | $g << 16 | $b << 8 | $a}
-                        }        
-                        
-                        set h [expr {($h - floor($h)) * 8.0}]
-                        gui_yuva $y [expr {$h < 2.0 ? -1.0 : $h < 4.0 ? $h - 3.0 : $h < 6.0 ? 1.0 : 7.0 - $h}] \
-                                    [expr {$h < 2.0 ? $h - 1.0 : $h < 4.0 ? 1.0 : $h < 6.0 ? 5.0 - $h : -1.0}] $a
-                    }
-
-                    
-                }
-
-                namespace help {
-                    
-                    proc set text {}
-                    
-                    proc get {}
-                }
-            }
             
 
     

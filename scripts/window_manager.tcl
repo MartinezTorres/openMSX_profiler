@@ -14,15 +14,20 @@ namespace eval wm {
         dict set ::wm::Status widgets wm {}
         osd create rectangle "wm" -relw 1 -relh 1 -rgba 0x00000000 -clip true
                 
-        after "20" ::wm::callbacks::upkeep
-        after "mouse button1 down" ::wm::callbacks::on_mouse_button1_down
-        after "mouse button1 up" ::wm::callbacks::on_mouse_button1_up
-        after "mouse motion" ::wm::callbacks::on_mouse_motion
+        after "realtime" 0.020 ::wm::callbacks::upkeep
+        
+        bind -layer osd_wm "mouse button1 down" -event {::wm::callbacks::on_mouse_button1_down}
+        bind -layer osd_wm "mouse button1 up"   -event {::wm::callbacks::on_mouse_button1_up}
+        bind -layer osd_wm "mouse motion"       -event {::wm::callbacks::on_mouse}
+        bind -layer osd_wm "mouse wheel"        -event {::wm::callbacks::on_mouse}
+        activate_input_layer osd_wm -blocking
     }
 
     proc stop {} {
         
+        deactivate_input_layer osd_wm
         dict unset ::wm::Status widgets wm
+        
     }
 
     proc reload_configuration {} {
@@ -144,19 +149,28 @@ namespace eval wm {
             }
         }
 
+        proc request_osd_refresh_recursive {relative_path} {
+            
+            set absolute_path [p $relative_path]
+            foreach child_absolute_path [dict keys [dict get $::wm::Status widgets] "$absolute_path.*"] {
+                #puts stderr "Updateate cabrn!! $child_absolute_path"
+                dict set ::wm::Status to_update $child_absolute_path {}
+            }
+            
+            foreach global_path [dict keys [dict get $::wm::Status to_update]] {
+                if {[regexp {^(.*)\.osd_([^\._]*)$} $global_path global_path osd_id parameter]} {
+                    #puts stderr "Updating $osd_id $parameter [::wm::widget rsub $global_path {}]"
+                    osd configure $osd_id -$parameter [::wm::widget rsub $global_path {}]
+                }
+            }
+            dict set ::wm::Status to_update [dict create]
+        }
+
         proc request_osd_refresh {args} {
             
-            if {$args=={}} {
-                set absolute_path [p]
-                foreach child_absolute_path [dict keys [dict get $::wm::Status widgets $absolute_path.*]] {
-                    dict set ::wm::Status to_update $child_absolute_path {}
-                }
+            foreach relative_path $args {
+                set absolute_path [p $relative_path]  
                 dict set ::wm::Status to_update $absolute_path {}
-            } else {                    
-                foreach relative_path $args {
-                    set absolute_path [p $relative_path]  
-                    dict set ::wm::Status to_update $absolute_path {}
-                }
             }
         }
         
@@ -201,7 +215,7 @@ namespace eval wm {
         proc remove {} {
 
             reval on_pre_remove
-            
+
             set absolute_path [p]
             foreach child_absolute_path [dict keys [dict get $::wm::Status widgets]] {
                 if {[regexp {^(.*)\.[^\.]*$} $child_absolute_path match parent]} {
@@ -212,9 +226,10 @@ namespace eval wm {
             }
 
             reval on_post_remove
-            
-            if {[osd exists $absolute_path]} { osd destroy $absolute_path }
-            runset $absolute_path
+            if {[osd exists $absolute_path]} { 
+                osd destroy $absolute_path 
+            }
+            runset {}
         }
         
         proc rebase {old_path} {
@@ -318,46 +333,68 @@ namespace eval wm {
             ::wm::widget add $path.bar rectangle
 
             ::wm::widget rset $path \
-                offset 0.25 \
-                offset_on_set { request_osd_refresh bar.osd_y bar.osd_h } \
-                visible_range 0.5 \
-                visible_range_on_set { request_osd_refresh bar.osd_y bar.osd_h } \
-                total_range 1 \
+                visible_range 50.0 \
+                total_range 100.0 \
+                offset 0.0 \
+                offset_start 0.0 \
                 total_range_on_set { request_osd_refresh bar.osd_y bar.osd_h } \
+                visible_range_on_set { request_osd_refresh bar.osd_y bar.osd_h } \
+                offset_on_set { 
+                    set offset [rsub offset]
+                    if {$offset<0} {rset offset 0.0}
+                    if {$offset>[rsub total_range]} {rset offset [rsub total_range]}
+                    rset offset_start [expr {
+                            [rsub offset]*([rsub total_range]-[rsub visible_range])/[rsub total_range]
+                    }]
+                    reval on_update
+                    request_osd_refresh bar.osd_y bar.osd_h 
+                } \
                 osd_x 0 \
                 osd_y 0 \
                 osd_w {[expr {1*$sz}]} \
                 osd_h {[expr {1*$sz}]} \
                 osd_clip true \
-                osd_rgba {0x808080FF} \
+                osd_rgba {0x404040FF} \
                 osd_bordersize {[expr {0.1*$sz}]} \
                 osd_borderrgba {0x404040FF} \
                 bar.osd_x 0 \
-                bar.osd_y {[expr {
-                    [rsub parent.osd_h]*([rsub parent.offset]/[rsub parent.total_range])*([rsub parent.visible_range]-[rsub parent.total_range])
-                }]} \
+                bar.osd_y_on_set { puts stderr "ON_SET: [p] $args [subst $args]" } \
+                bar.osd_y {[expr {[rsub parent.offset_start]*[rsub parent.osd_h]/[rsub parent.total_range]}]} \
                 bar.osd_w {[expr {1*$sz}]} \
-                bar.osd_h {[expr {
-                    [rsub parent.osd_h]*([rsub parent.visible_range]/[rsub parent.total_range])
-                }]} \
+                bar.osd_h_on_set { puts stderr "ON_SET: [p] $args [subst $args]" } \
+                bar.osd_h {[expr {[rsub parent.osd_h]*([rsub parent.visible_range]/[rsub parent.total_range])}]} \
                 bar.osd_clip true \
                 bar.osd_rgba {0x808080FF} \
                 bar.osd_bordersize {[expr {0.1*$sz}]} \
-                bar.osd_borderrgba {0x404040FF} \
-                bar.is_clickable {} \
-                bar.on_mouse_button1_down {
+                bar.osd_borderrgba {0x808080FF} \
+                is_clickable {} \
+                on_mouse_button1_down {
                     lassign [osd info [p] -mousecoord] x y
-                    rset drag $y
-                } \
-                bar.on_mouse_motion {
-                    if {[rexists is_pressed]} {
-                        lassign [osd info [p] -mousecoord] x y
-                        
-                        set offset_update [expr {
-                            ([rsub drag]-$y)*[rsub parent.total_range]/[rsub parent.osd_h]
-                        }]
-                        puts stderr $offset_update
+                    
+                    set bar_begin [expr {[rsub bar.osd_y]/[rsub osd_h]}]
+                    set bar_size  [expr {[rsub bar.osd_h]/[rsub osd_h]}]
+                    set bar_end   [expr {$bar_begin+$bar_size}]
+                    if {$y<$bar_begin} {
+                        rset offset [expr {[rsub offset]-[rsub visible_range]}]
+                    } elseif {$y>$bar_end} {    
+                        rset offset [expr {[rsub offset]+[rsub visible_range]}]
                     }
+                    
+                    set bar_begin [expr {[rsub bar.osd_y]/[rsub osd_h]}]
+                    set bar_size  [expr {[rsub bar.osd_h]/[rsub osd_h]}]
+                    set bar_end   [expr {$bar_begin+$bar_size}]
+                    if {($y>$bar_begin) && ($y<$bar_end)} {
+                        rset drag_y $y
+                        rset on_mouse_motion {
+                            lassign [osd info [p] -mousecoord] x y
+                            rset offset [expr {[rsub offset]+($y-[rsub drag_y])*[rsub total_range]*([rsub total_range]/([rsub total_range]-[rsub visible_range]))}]
+                            rset drag_y $y
+                        }    
+                    }
+                } \
+                on_mouse_button1_up {
+                    runset drag_y
+                    runset on_mouse_motion
                 } \
                 {*}$args
         }
@@ -370,23 +407,30 @@ namespace eval wm {
             ::wm::widget add $path.title.text text      
             ::wm::widget add $path.hide toggle_button
             ::wm::widget add $path.left_scroll_bar vertical_scroll_bar
+            ::wm::widget add $path.resize rectangle
 
             ::wm::widget rset $path \
-                visible__height {[expr {3*$sz}]} \
+                visible_height_on_set {
+                    lassign $args value
+                    #puts stderr "OSD_H on_set [p] $value rset parent.osd_h_autoupdate \{\[expr \{2*\$sz+$value\}\]\}"
+                    rset hide.on_Off "rset parent.osd_h_autoupdate \{\[expr \{2*\$sz+$value\}\]\}"
+                    reval osd_h_on_set
+                } \
+                visible_height {[expr {3*$sz}]} \
                 osd_x 0 \
                 osd_y 0 \
                 osd_y_on_set {
                     if {[rexists next_window]} {
-                        puts stderr "Why? [p] rset parent.[rget next_window].osd_y [expr {[subst [rget osd_y]]+[subst [rget osd_h]]}]"
+                        #puts stderr "Why? [p] rset parent.[rget next_window].osd_y [expr {[subst [rget osd_y]]+[subst [rget osd_h]]}]"
                         rset parent.[rget next_window].osd_y [expr {[rsub osd_y]+[rsub osd_h]}]
                     }
                 } \
                 osd_w {[expr {$sz*$width}]} \
                 osd_h {[expr {1*$sz}]} \
-                osd_h_autoupdate {[expr {2*$sz+[subst [rget visible__height]]}]} \
+                osd_h_autoupdate {[expr {2*$sz+[rsub visible_height]}]} \
                 osd_h_on_set {
                     if {[rexists next_window]} {
-                        puts stderr "osd_h? [p] rset parent.[rget next_window].osd_y [expr {[subst [rget osd_y]]+[subst [rget osd_h]]}]"
+                        #puts stderr "osd_h? [p] rset parent.[rget next_window].osd_y [expr {[subst [rget osd_y]]+[subst [rget osd_h]]}]"
                         rset parent.[rget next_window].osd_y [expr {[rsub osd_y]+[rsub osd_h]}]
                     }
                 } \
@@ -408,12 +452,10 @@ namespace eval wm {
                 panel.osd_x 0 \
                 panel.osd_y {[expr {1*$sz}]} \
                 panel.osd_w {[expr {($width-1)*$sz}]} \
-                panel.osd_h_on_set {
-                    lassign $args value
-                    puts stderr "OSD_H on_set [p] $value rset parent.osd_h_autoupdate \{\[expr \{2*\$sz+$value\}\]\}"
-                    rset parent.hide.on_Off "rset parent.osd_h_autoupdate \{\[expr \{2*\$sz+$value\}\]\}"
-                } \
                 panel.osd_h {[expr {5*$sz}]} \
+                panel.osd_h_on_set {
+                    request_osd_refresh_recursive parent
+                } \
                 panel.osd_clip true \
                 panel.osd_rgba {0x40404040} \
                 hide.textOn  "\u25BC" \
@@ -427,9 +469,53 @@ namespace eval wm {
                 hide.text.osd_size {[expr {5*$sz/6}]} \
                 hide.text.osd_font {$font_mono} \
                 left_scroll_bar.osd_y {[expr {1*$sz}]} \
-                left_scroll_bar.osd_x  {[expr {($width-1)*$sz}]} \
-                left_scroll_bar.osd_h  {[subst [rget parent.visible__height]]} \
+                left_scroll_bar.osd_x {[expr {($width-1)*$sz}]} \
+                left_scroll_bar.osd_h {[rsub parent.visible_height]} \
+                left_scroll_bar.total_range {[expr {1.0*[rsub parent.panel.osd_h]}]} \
+                left_scroll_bar.visible_range {[expr {1.0*[rsub parent.visible_height]}]} \
+                left_scroll_bar.on_update {
+                    rset parent.panel.osd_y [expr {1*$sz-[rsub offset_start]}]
+                } \
+                resize.osd_y {[expr {[rsub parent.visible_height]+1*$sz}]} \
+                resize.osd_x {[expr {($width-1)*$sz}]} \
+                resize.osd_w {[expr {1*$sz}]} \
+                resize.osd_h {[expr {1*$sz}]} \
+                resize.osd_bordersize {[expr {0.1*$sz}]} \
+                resize.osd_borderrgba {0x606060FF} \
+                resize.osd_rgba {0x606060FF} \
+                resize.is_clickable {} \
+                resize.on_mouse_button1_down { 
+                    
+                    rset osd_rgba 0x808080FF 
+
+                    lassign [osd info [p] -mousecoord] x y
+                    rset drag_x $x
+                    rset drag_y $y
+                    
+                    
+                    rset on_mouse_motion {
+                        lassign [osd info [p] -mousecoord] x y
+                        
+                        set offset_x [expr {($x-[rget drag_x])*[rsub osd_w]}]
+                        set offset_y [expr {($y-[rget drag_y])*[rsub osd_h]}]
+                        
+#                        puts stderr "A [rsub parent.visible_height] [rsub parent.osd_h]"
+                        
+                        rset parent.visible_height [expr {[rsub parent.visible_height]+$offset_y}]
+
+#                        puts stderr "B [rsub parent.visible_height] [rsub parent.osd_h]"
+                        
+                        request_osd_refresh_recursive parent.parent
+                    }
+                } \
+                resize.on_mouse_button1_up   { 
+
+                    rset osd_rgba 0x606060FF 
+                    runset on_mouse_motion
+                } \
                 {*}$args
+
+                
         }
 
         proc toggle_button {path args} {
@@ -494,7 +580,9 @@ namespace eval wm {
                 if {[regexp {^(.*)\.on_upkeep$} $path match parent]} {
                     ::wm::widget reval $parent on_upkeep
                 }
+            }
 
+            foreach path [dict keys [dict get $::wm::Status widgets]] {
                 if {[regexp {^(.*)\.([^\.]*)_autoupdate$} $path match parent parameter]} {
 
                     dict with ::wm::Configuration {}
@@ -518,63 +606,68 @@ namespace eval wm {
             dict set ::wm::Status to_update [dict create]
             
             
-            after "20" ::wm::callbacks::upkeep
+            after "realtime" 0.020 ::wm::callbacks::upkeep
             return
         }
 
-        proc on_mouse_button1_down {} {
+        proc on_mouse_button1_down {event_info} {
             
             if {![dict exists $::wm::Status widgets wm]} { return }
+
+            #puts stderr "Event! $event_info"
 
             foreach path [dict keys [dict get $::wm::Status widgets]] {
                 if {[regexp {^(.*)\.is_clickable$} $path match parent]} {
                     if {[is_mouse_over $parent]==1} {
                         ::wm::widget rset $parent is_pressed {}
-                        ::wm::widget reval $parent on_mouse_button1_down
+                        ::wm::widget reval $parent on_mouse_button1_down $event_info
                     }                                        
                 }
             }
-            after "mouse button1 down" ::wm::callbacks::on_mouse_button1_down
         }
 
-        proc on_mouse_button1_up {} {
+        proc on_mouse_button1_up {event_info} {
             
             if {![dict exists $::wm::Status widgets wm]} { return }
             
+            #puts stderr "Event! $event_info"
 
             foreach path [dict keys [dict get $::wm::Status widgets]] {
                 if {[regexp {^(.*)\.is_clickable$} $path match parent]} {
 
                     if {[::wm::widget rexists $parent is_pressed]} {
                         if {[is_mouse_over $parent]} {
-                            ::wm::widget reval $parent on_activation
+                            ::wm::widget reval $parent on_activation $event_info
                         }
-                        ::wm::widget reval $parent on_mouse_button1_up
-                        ::wm::widget runset $parent is_pressed
+                        ::wm::widget reval $parent on_mouse_button1_up $event_info
+                        ::wm::widget runset $parent is_pressed $event_info
                     }
                 }
             }
-            after "mouse button1 up" ::wm::callbacks::on_mouse_button1_up
         }
 
-        proc on_mouse_motion {} {
+        proc on_mouse {event_info} {
             
             if {![dict exists $::wm::Status widgets wm]} { return }
 
+            #puts stderr "Catch All Event! $event_info"
+            lassign $event_info device type
+
             foreach path [dict keys [dict get $::wm::Status widgets]] {
-                if {[regexp {^(.*)\.on_mouse_motion$} $path match parent]} {
-                    ::wm::widget reval $parent on_mouse_motion
+                if {[regexp {^(.*)\.on_mouse_([^\._]*)$} $path match parent requested_type]} {
+                    if {$requested_type==$type} {
+                        ::wm::widget reval $parent "on_mouse_$type" $event_info
+                    }
                 }
             }
-            after "mouse motion" ::wm::callbacks::on_mouse_motion
         }
 
-        proc is_mouse_over {id} {
+        proc is_mouse_over {path} {
             
             set ret 0
-            if {[osd exists $id]} {
+            if {[osd exists $path]} {
                 catch {
-                    lassign [osd info $id -mousecoord] x y
+                    lassign [osd info $path -mousecoord] x y
                     if {($x >= 0) && ($x <= 1) && ($y >= 0) && ($y <= 1)} {
                         set ret 1
                     }
