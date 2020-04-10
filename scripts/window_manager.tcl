@@ -35,7 +35,7 @@ namespace eval wm {
     
     proc widget {command absolute_path args} {
         
-        puts "Widget: $command $absolute_path $args"
+        #puts "Widget: $command $absolute_path $args"
         ::wm::start
         if {$absolute_path=={}} { error "absolute_path can not be empty."}
         
@@ -214,10 +214,23 @@ namespace eval wm {
 
         proc remove {} {
 
+            set absolute_path [p]
+            foreach child_absolute_path [dict keys [dict get $::wm::Status widgets] "$absolute_path*"] {
+
+                dict unset ::wm::Status widgets $child_absolute_path
+                dict unset ::wm::Status to_update $child_absolute_path
+                if {[osd exists $child_absolute_path]} { 
+                    osd destroy $child_absolute_path 
+                }
+            }
+        }
+
+        proc remove_old {} {
+
             reval on_pre_remove
 
             set absolute_path [p]
-            foreach child_absolute_path [dict keys [dict get $::wm::Status widgets]] {
+            foreach child_absolute_path [dict keys [dict get $::wm::Status widgets] "$absolute_path*"] {
                 if {[regexp {^(.*)\.[^\.]*$} $child_absolute_path match parent]} {
                     if {$parent == $absolute_path} {
                         ::wm::widget remove $child_absolute_path
@@ -410,13 +423,6 @@ namespace eval wm {
             ::wm::widget add $path.resize rectangle
 
             ::wm::widget rset $path \
-                visible_height_on_set {
-                    lassign $args value
-                    #puts stderr "OSD_H on_set [p] $value rset parent.osd_h_autoupdate \{\[expr \{2*\$sz+$value\}\]\}"
-                    rset hide.on_Off "rset parent.osd_h_autoupdate \{\[expr \{2*\$sz+$value\}\]\}"
-                    reval osd_h_on_set
-                } \
-                visible_height {[expr {3*$sz}]} \
                 osd_x 0 \
                 osd_y 0 \
                 osd_y_on_set {
@@ -498,12 +504,8 @@ namespace eval wm {
                         
                         set offset_x [expr {($x-[rget drag_x])*[rsub osd_w]}]
                         set offset_y [expr {($y-[rget drag_y])*[rsub osd_h]}]
-                        
-#                        puts stderr "A [rsub parent.visible_height] [rsub parent.osd_h]"
-                        
-                        rset parent.visible_height [expr {[rsub parent.visible_height]+$offset_y}]
 
-#                        puts stderr "B [rsub parent.visible_height] [rsub parent.osd_h]"
+                        rset parent.visible_height [expr {[rsub parent.visible_height]+$offset_y}]
                         
                         request_osd_refresh_recursive parent.parent
                     }
@@ -513,6 +515,15 @@ namespace eval wm {
                     rset osd_rgba 0x606060FF 
                     runset on_mouse_motion
                 } \
+                visible_height_on_set {
+                    lassign $args value
+                    if {[subst $value]<0} {rset visible_height 0}
+                    if {[subst $value]>[rsub panel.osd_h]} {rset visible_height [rsub panel.osd_h]}
+                    
+                    rset hide.on_Off "rset parent.osd_h_autoupdate \{\[expr \{2*\$sz+$value\}\]\}"
+                    reval osd_h_on_set
+                } \
+                visible_height {[expr {3*$sz}]} \
                 {*}$args
 
                 
@@ -558,12 +569,87 @@ namespace eval wm {
                 text.osd_text "Button" \
                 text.osd_font {$font_sans} \
                 text.osd_x {[expr {1.5*$sz/6.}]} \
-                text.osd_y {[expr {0.25*$sz/6.}]} \
-                text.osd_size {[expr {5*$sz/6}]} \
+                text.osd_y {[expr {-0.0*$sz/6.}]} \
+                text.osd_size {[expr {45*$sz/60}]} \
                 text.osd_rgba {0x404040FF} \
                 is_clickable {} \
-                on_mouse_button1_down { rset osd_rgba 0xC0C0C0FF } \
+                on_mouse_button1_down {  } \
                 on_mouse_button1_up   { rset osd_rgba 0x808080FF } \
+                {*}$args
+            
+        }
+
+        proc dropdown_button {path args} {
+
+            ::wm::widget add $path button
+            
+            ::wm::widget rset $path \
+                selected "A" \
+                choices [list "A" "B" "C"] \
+                text.osd_text "A" \
+                on_mouse_button1_down { 
+                    
+                    lassign [osd info "wm" -mousecoord] x y
+                    rset osd_rgba 0xC0C0C0FF
+                    
+                    ::wm::widget add "wm.tmp_window" rectangle
+                    set idx 0
+                    foreach choice [rget choices] {
+                        ::wm::widget add "wm.tmp_window.$idx" rectangle
+                        ::wm::widget add "wm.tmp_window.$idx.text" text
+
+                        ::wm::widget rset "wm.tmp_window.$idx" \
+                            osd_x 0 \
+                            osd_y [expr {$idx*[rsub osd_h]}] \
+                            osd_h [rsub osd_h] \
+                            osd_w [rsub osd_w] \
+                            osd_bordersize {[expr {0.1*$sz}]} \
+                            osd_borderrgba {0x404040FF} \
+                            osd_rgba {0x808080FF} \
+                            text.osd_text $choice \
+                            text.osd_font {$font_sans} \
+                            text.osd_x {[expr {1.5*$sz/6.}]} \
+                            text.osd_y {[expr {0.25*$sz/6.}]} \
+                            text.osd_size {[expr {5*$sz/6}]} \
+                            text.osd_rgba {0x404040FF}
+                            
+                        incr idx
+                    }
+                   
+                    ::wm::widget rset "wm.tmp_window" \
+                        choices [rget choices] \
+                        osd_relx $x \
+                        osd_rely $y \
+                        osd_h [expr {$idx*[rsub osd_h]}] \
+                        osd_w [rsub osd_w] \
+                        on_mouse_motion {
+                            set idx 0
+                            foreach choice [rget choices] {
+                                if {[wm::callbacks::is_mouse_over "wm.tmp_window.$idx"]} {
+                                    rset $idx.osd_rgba 0xC0C0C0FF
+                                } else {
+                                    rset $idx.osd_rgba 0x808080FF 
+                                }
+                                incr idx
+                            }
+                        }
+                    
+                } \
+                on_mouse_button1_up   { 
+                    
+                    rset osd_rgba 0x808080FF 
+                    
+                    set idx 0
+                    foreach choice [rget choices] {
+                        if {[wm::callbacks::is_mouse_over "wm.tmp_window.$idx"]} {
+                            rset selected $choice
+                            rset text.osd_text $choice
+                        }
+                        incr idx
+                    }
+                    
+                    ::wm::widget remove "wm.tmp_window"
+                } \
                 {*}$args
             
         }
@@ -689,7 +775,7 @@ namespace eval wm {
             font_sans "skins/DejaVuSans.ttf" \
             sz 24 \
             width 25 \
-            smoothness 0.8 \
+            smoothness 0.6 \
         ]}
     }
 }

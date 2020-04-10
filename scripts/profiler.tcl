@@ -57,10 +57,12 @@ namespace eval profiler {
                 debug_cb [dict create] \
                 debug_cb_idx 0 \
                 active_tags [dict create] \
+                selected_tag {} \
             ]}
 
             proc Configuration {} { return [dict create \
                 auto_scan 0 \
+                favorite_tags [dict create] \
                 avg_halflife 1 \
                 z80_interface_enabled 0 \
                 z80_section_name_address 0xF931 \
@@ -684,7 +686,10 @@ namespace eval profiler {
             ::wm::widget add "wm.profiler.dock" dock 
             
             ::wm::widget add "wm.profiler.dock.panel.control" ::profiler::gui::widgets::control_window 
-            ::wm::widget add "wm.profiler.dock.panel.all_tags" ::profiler::gui::widgets::all_tag_window 
+#            ::wm::widget add "wm.profiler.dock.panel.favorite_tags" ::profiler::gui::widgets::main_detected_tags_window 
+            ::wm::widget add "wm.profiler.dock.panel.last_detected_tags" ::profiler::gui::widgets::last_detected_tags_window 
+            ::wm::widget add "wm.profiler.dock.panel.info_window_docked" ::profiler::gui::widgets::info_window_docked 
+            ::wm::widget add "wm.profiler.dock.panel.timeline_window_docked" ::profiler::gui::widgets::timeline_window_docked
         }
         
 
@@ -800,668 +805,454 @@ namespace eval profiler {
 
             proc control_window {path args} {
             
-                ::wm::widget add $path docked_window  \
-                    title.text.osd_text "Controls"
+                ::wm::widget add $path docked_window                
+                ::wm::widget add $path.panel.sort dropdown_button
+                ::wm::widget add $path.panel.bar dropdown_button
+                ::wm::widget add $path.panel.info dropdown_button
+                ::wm::widget add $path.panel.scope dropdown_button
+                ::wm::widget add $path.panel.z80 toggle_button
+                ::wm::widget add $path.panel.auto_scan toggle_button
+                ::wm::widget add $path.panel.reset button
+                ::wm::widget add $path.panel.pause toggle_button
+                
+                
+                
+                ::wm::widget rset $path \
+                    title.text.osd_text "Controls" \
+                    panel.sort.osd_x  {[expr {0.1*$sz}]} \
+                    panel.sort.osd_y  {[expr {0.1*$sz}]} \
+                    panel.sort.osd_w  {[expr {7*$sz}]} \
+                    panel.bar.osd_x   {[expr {0.1*$sz}]} \
+                    panel.bar.osd_y   {[expr {1.1*$sz}]} \
+                    panel.bar.osd_w   {[expr {7*$sz}]} \
+                    panel.info.osd_x  {[expr {0.1*$sz}]} \
+                    panel.info.osd_y  {[expr {2.1*$sz}]} \
+                    panel.info.osd_w  {[expr {7*$sz}]} \
+                    panel.scope.osd_x {[expr {7.2*$sz}]} \
+                    panel.scope.osd_y {[expr {0.1*$sz}]} \
+                    panel.scope.osd_w {[expr {7*$sz}]} \
+                    panel.z80.osd_x   {[expr {7.2*$sz}]} \
+                    panel.z80.osd_y   {[expr {1.1*$sz}]} \
+                    panel.z80.osd_w   {[expr {7*$sz}]} \
+                    panel.auto_scan.osd_x {[expr {7.2*$sz}]} \
+                    panel.auto_scan.osd_y {[expr {2.1*$sz}]} \
+                    panel.auto_scan.osd_w {[expr {7*$sz}]} \
+                    panel.reset.osd_x {[expr {14.3*$sz}]} \
+                    panel.reset.osd_y {[expr {0.1*$sz}]} \
+                    panel.reset.osd_w {[expr {7*$sz}]} \
+                    panel.pause.osd_x {[expr {14.3*$sz}]} \
+                    panel.pause.osd_y {[expr {1.1*$sz}]} \
+                    panel.pause.osd_w {[expr {7*$sz}]} \
+                    panel.sort.choices [list \
+                        "sort: time/call\u25BC" "sort: time/call\u25B2" \
+                        "sort: time/vdp\u25BC" "sort: time/vdp\u25B2" \
+                        "sort: name\u25BC" "sort: name\u25B2" \
+                        "sort: address\u25BC" "sort: address\u25B2"] \
+                    panel.sort.selected "sort: time/call\u25BC" \
+                    panel.sort.text.osd_text "sort: time/call\u25BC" \
+                    panel.bar.choices [list \
+                        "bar: time/call" "bar: time/vdp" \
+                    panel.bar.selected "bar: time/call" ]\
+                    panel.bar.text.osd_text "bar: time/call" \
+                    panel.info.choices [list \
+                        "info: time/call" "info: time/vdp" \
+                        "info: address" ] \
+                    panel.info.selected "info: time/call" \
+                    panel.info.text.osd_text "info: time/call" \
+                    panel.scope.choices [list \
+                        "scope: 1s"  "scope: 5s" \
+                        "scope: 30s" "scope: 120s" ]\
+                    panel.scope.selected "scope: 1s" \
+                    panel.scope.text.osd_text "scope: 1s" \
+                    panel.z80.textOn  "z80 interface: on" \
+                    panel.z80.textOff "z80 interface: off" \
+                    panel.auto_scan.textOn  "Auto scan: on" \
+                    panel.auto_scan.textOff "Auto scan: off" \
+                    panel.reset.text.osd_text "Reset" \
+                    panel.pause.textOn  "Resume" \
+                    panel.pause.textOff "Pause" \
+                    {*}args
+                    
             }          
 
-            proc all_tag_window {path args} {
+            proc last_detected_tags_window {path args} {
             
                 ::wm::widget add $path docked_window
                 
             
                 ::wm::widget rset $path \
-                    title.text.osd_text "All Detected Tags" \
+                    title.text.osd_text "Main Detected Tags" \
                     panel.on_upkeep { apply { {} { namespace eval ::wm::widget_methods {
-                            
-                            dict with ::wm::Configuration {}
-                            namespace upvar ::profiler::core Status Status
-                            set tag_ids [dict keys [dict get $Status Tags]]
-                            
-                            set current_ts [machine_info time]
-                            set tag_widths [list]
-                            foreach tag_id $tag_ids {
-                                if {[dict get $Status Tags $tag_id profiler_level]>1} {
-                                    if {[dict get $Status Tags $tag_id previous_ts_end] > $current_ts-5} {
-                                        lappend tag_widths $tag_id [expr {[dict get $::profiler::core::Status Tags $tag_id avg_duration]/[::profiler::gui::util::vdp::get_frame_duration]}]
-                                    }
-                                }
+                        
+                        if {[rexists skip]} {
+                            set skip [expr {[rget skip]-1}]
+                            if {$skip>0} {
+                                rset skip $skip
+                            } else {
+                                runset skip
                             }
-
-                            if {![rexists active_tags]} {rset active_tags [dict create]}                            
-                            set active_tags [rget active_tags]
-
-                            set idx 0
-                            foreach {tag_id width} [lsort -real -decreasing -stride 2 -index 1 $tag_widths] {
-                                
-                                dict incr active_tags $tag_id
-                                if {[dict get $active_tags $tag_id]==1} {
-                                    dict incr active_tags $tag_id
-                                    ::wm::widget add [p].$tag_id ::profiler::gui::widgets::info_bar $tag_id
-                                }
-                                rset $tag_id.osd_y_autoupdate [expr {$idx*$sz}]
-                                rset $tag_id.bar.osd_relw [::profiler::gui::util::clamp01 $width]
-                                incr idx
-                                if {$idx>10} { break }
-                            }
-
-                            dict for {tag_id val} $active_tags {
-                                
-                                dict incr active_tags $tag_id -1
-
-                                if {$val==1} {
-                                    dict unset active_tags $tag_id
-                                    ::wm::widget remove [p].$tag_id
-                                }
-                            }
-                            
-                            rset active_tags $active_tags
-                            if {$idx==0} {set idx 1}
-                            rset osd_h [expr {$idx*$sz}]
+                            return
                         }
-                    }}} \
+                        rset skip 4
+                        
+                        
+                        dict with ::wm::Configuration {}
+                        namespace upvar ::profiler::core Status Status
+                        set tag_ids [dict keys [dict get $Status Tags]]
+                        
+                        set current_ts [machine_info time]
+                        set tag_widths [list]
+                        foreach tag_id $tag_ids {
+                            if {[dict get $Status Tags $tag_id profiler_level]>1} {
+                                if {[dict get $Status Tags $tag_id previous_ts_end] > $current_ts-5} {
+                                    lappend tag_widths $tag_id [expr {[dict get $::profiler::core::Status Tags $tag_id avg_duration]/[::profiler::gui::util::vdp::get_frame_duration]}]
+                                }
+                            }
+                        }
+
+                        if {![rexists active_tags]} {rset active_tags [dict create]}                            
+                        set active_tags [rget active_tags]
+
+                        set idx 0
+                        foreach {tag_id width} [lsort -real -decreasing -stride 2 -index 1 $tag_widths] {
+                            
+                            dict incr active_tags $tag_id
+                            if {[dict get $active_tags $tag_id]==1} {
+                                dict incr active_tags $tag_id
+                                ::wm::widget add [p].$tag_id ::profiler::gui::widgets::tag_bar $tag_id \
+                                    bar.osd_rgba [::profiler::gui::util::get_tag_rgba $tag_id]        
+
+                                rset $tag_id.osd_y [expr {$idx*$sz}]
+                            }
+                            rset $tag_id.osd_y_autoupdate [expr {$idx*$sz}]
+                            rset $tag_id.bar.osd_relw [::profiler::gui::util::clamp01 $width]
+                            incr idx
+                            if {$idx>10} { break }
+                        }
+
+                        dict for {tag_id val} $active_tags {
+                            
+                            dict incr active_tags $tag_id -1
+
+                            if {$val==1} {
+                                dict unset active_tags $tag_id
+                                ::wm::widget remove [p].$tag_id
+                            }
+                        }
+                        
+                        rset active_tags $active_tags
+                        if {$idx==0} {set idx 1}
+                        rset osd_h [expr {$idx*$sz}]
+                    }}}} \
                     {*}$args
                     
             }
-    
-            proc info_bar {path tag_id args} {
+
+            proc info_window_docked {path args} {
+            
+                ::wm::widget add $path docked_window
+                ::wm::widget add $path.panel.text text
                 
-                ::wm::widget add $path rectangle                    
+                ::wm::widget rset $path \
+                    title.text.osd_text "Info window" \
+                    panel.osd_h {[expr {15*$sz}]} \
+                    panel.text.osd_text "" \
+                    panel.text.osd_font {$font_mono} \
+                    panel.text.osd_x {[expr {1.5*$sz/6.}]} \
+                    panel.text.osd_y {[expr {-0.0*$sz/6.}]} \
+                    panel.text.osd_size {[expr {45*$sz/60}]} \
+                    panel.text.osd_rgba {0xC0C0C0FF} \
+                    panel.text.on_upkeep { apply { {} { namespace eval ::wm::widget_methods {
+                        
+                        if {[rexists skip]} {
+                            set skip [expr {[rget skip]-1}]
+                            if {$skip>0} {
+                                rset skip $skip
+                            } else {
+                                runset skip
+                            }
+                            return
+                        }
+                        rset skip 4
+                        
+                        if {![dict exist $::profiler::core::Status selected_tag]} {
+                            rset osd_text ""
+                            return
+                        }
+                        set tag_id [dict get $::profiler::core::Status selected_tag]
+                        if {![dict exist $::profiler::core::Status Tags $tag_id]} {
+                            rset osd_text ""
+                            return
+                        }
+
+                        dict with ::profiler::core::Status Tags $tag_id {
+                   
+                        proc show {type val} {
+                            
+                            if {$type=="int"} {
+                                if {abs($val)<1000} {
+                                    return [format "%4d " $val]
+                                }
+                                foreach postfix [list "K M G P"] {
+                                    set $val [expr {$val/1000}]
+                                    if {abs($val)<10} {
+                                        return [format "%5.2f$postfix" $val]
+                                    } elseif {abs($val)<100} {
+                                            return [format "%5.1f$postfix" $val]
+                                    } elseif {abs($val)<1000} {
+                                            return [format "%5.0f$postfix" $val]
+                                    }
+                                }
+                            }
+                            
+                            if {$type=="times"} {
+                                
+                                set cpu [get_active_cpu]
+                                set vdp_percent [expr {100 * $val / [::profiler::gui::util::vdp::get_frame_duration]}]
+                                if {$vdp_percent>110} {
+                                    return [format "%5.3f ms, %5.1f%% of VDP" \
+                                        [expr {1000*$val}] \
+                                        $vdp_percent \
+                                    ]
+                                } elseif {$vdp_percent>10} {
+                                    return [format "%5.3f ms, %5.1f lines, %5.2f%% of VDP" \
+                                        [expr {1000*$val}] \
+                                        [expr {$val * 3579545 / 228}] \
+                                        $vdp_percent \
+                                    ]                                    
+                                } else {
+                                    return [format "%5.3f ms, %5d T, %5.1f lines, %5.3f%% of VDP" \
+                                        [expr {1000*$val}] \
+                                        [expr {round($val * [machine_info ${cpu}_freq])}] \
+                                        [expr {$val * 3579545 / 228}] \
+                                        $vdp_percent \
+                                    ]                                    
+                                }
+                            }
+                            return $val
+                        }
+                            
+                        rset osd_text \
+"ID: $tag_id
+start address: 
+invocation count: [show int $count] 
+
+duration:
+avg: [show times $avg_duration]
+max: [show times $max_duration]
+
+time_between_invocations:
+avg: [show times $avg_time_between_invocations]
+max: [show times $max_time_between_invocations]
+
+occupation:
+avg: [format %5.1f%% [expr {100*$avg_occupation}]]
+max: [format %5.1f%% [expr {100*$max_occupation}]]
+"
+                        }
+                    }}}} \
+                    {*}$args
+                    
+            }    
+
+            proc timeline_window_docked {path args} {
+            
+                ::wm::widget add $path docked_window
+                ::wm::widget add $path.panel.timeline rectangle                        
+                
+                ::wm::widget rset $path \
+                    title.text.osd_text "Timeline" \
+                    on_upkeep { apply { {} { namespace eval ::wm::widget_methods {
+                        
+                        if {[rexists skip]} {
+                            set skip [expr {[rget skip]-1}]
+                            if {$skip>0} {
+                                rset skip $skip
+                            } else {
+                                runset skip
+                            }
+                            return
+                        }
+                        rset skip 4
+                        
+                        if {![dict exist $::profiler::core::Status selected_tag]} {
+                            return
+                        }
+                        set tag_id [dict get $::profiler::core::Status selected_tag]
+                        if {![dict exist $::profiler::core::Status Tags $tag_id]} {
+                            return
+                        }
+                        
+                        set log [dict get $::profiler::core::Status Tags $tag_id previous_log]
+                        if {[dict size $log]==0} {return}
+                        
+                        lassign [dict keys $log] first_key
+                        if {[rget current_timeline_id]==$first_key} { return }
+                        rset current_timeline_id $first_key
+                        
+                        set path [p]
+
+                        ::wm::widget remove $path.panel.timeline
+                        
+                        ::wm::widget add $path.panel.timeline rectangle \
+                            osd_relw 1 \
+                            osd_relh 1 
+
+                        ::wm::widget add $path.panel.timeline.cpu rectangle \
+                            osd_relw 1 \
+                            osd_h {[expr {1.5*$sz}]} \
+                            osd_y {[expr {0.25*$sz}]}
+                            
+                        ::wm::widget add $path.panel.timeline.vpu rectangle \
+                            osd_relw 1 \
+                            osd_h {[expr {1.5*$sz}]} \
+                            osd_y {[expr {2.0*$sz}]}
+
+                        ::wm::widget add $path.panel.timeline.breakdown rectangle \
+                            osd_relw 1 \
+                            osd_y {[expr {3.75*$sz}]}
+
+                        set subtag_usage [dict create]
+                        set subtag_begin [dict create]
+                        dict for {idx entry} $log {
+
+                            lassign $entry sub_tag_id sub_ts_begin sub_ts_end
+
+                            #dict incr subtag_usage $sub_tag_id [expr {$sub_ts_end-$sub_ts_begin}] 
+
+                            if {![dict exists $subtag_begin $sub_tag_id]} {
+                                dict set subtag_begin $sub_tag_id $sub_ts_begin 
+                            }
+                        }
+                        
+                        set subtag_paths [dict create]
+                        foreach {sub_tag_id sub_tag_begin} [lsort -real -stride 2 -index 1 $subtag_begin] {
+
+                            set level [dict size $subtag_paths]
+                            set subtag_path [format "tag%03d" $level]
+                            dict set subtag_paths $sub_tag_id $subtag_path
+                            ::wm::widget add $path.panel.timeline.breakdown.$subtag_path ::profiler::gui::widgets::tag_bar $sub_tag_id \
+                                osd_y [expr {$level*$sz}] 
+
+                            ::wm::widget add $path.panel.timeline.cpu.$subtag_path rectangle \
+                                osd_relw 1 osd_relh 1 osd_rgba 0x00000000
+                                
+                        }
+                        ::wm::widget rset $path.panel.timeline.breakdown \
+                            osd_h [expr {[dict size $subtag_paths]*$sz}] 
+                        ::wm::widget rset $path.panel \
+                            osd_h [expr {(3.75+[dict size $subtag_paths])*$sz}] 
+                        
+                            
+                        set ts_begin [dict get $::profiler::core::Status Tags $tag_id previous_ts_begin]
+                        set ts_end   [dict get $::profiler::core::Status Tags $tag_id previous_ts_end]
+                        set duration [dict get $::profiler::core::Status Tags $tag_id previous_duration]
+                        
+                        set idx_id 0
+                        puts stderr "[dict size $log] [dict size $subtag_paths]"
+                        if ([dict size $log]>200) {return}
+                        if ([dict size $subtag_paths]>20) {return}
+                        dict for {idx entry} $log {
+
+                            lassign $entry sub_tag_id sub_ts_begin sub_ts_end
+
+                            #puts stderr "$ts_begin $ts_end $duration $sub_ts_end $sub_ts_begin"
+                            
+                            set pos   [::profiler::gui::util::clamp01 [expr {($sub_ts_begin - $ts_begin)/$duration}]]
+                            set width [::profiler::gui::util::clamp01 [expr {($sub_ts_end - $sub_ts_begin)/$duration}]]
+                            if {$width<0.01} {set width 0.01}
+                            
+                            puts stderr "[expr {($sub_ts_begin - $ts_begin)/$duration}] [expr {($sub_ts_end - $sub_ts_begin)/$duration}]"
+
+
+                            incr idx_id
+                            ::wm::widget add $path.panel.timeline.cpu.[dict get $subtag_paths $sub_tag_id].[format "bar%03d" $idx_id] rectangle \
+                                osd_relh 1 \
+                                osd_relx $pos \
+                                osd_relw $width \
+                                osd_rgba [::profiler::gui::util::get_tag_rgba $sub_tag_id]
+                                
+                            ::wm::widget add $path.panel.timeline.breakdown.[dict get $subtag_paths $sub_tag_id].bar.[format "bar%03d" $idx_id] rectangle \
+                                osd_relh 1 \
+                                osd_relx $pos \
+                                osd_relw $width \
+                                osd_rgba [::profiler::gui::util::get_tag_rgba $sub_tag_id]                            
+                            
+                        }
+                    }}}} \
+                    {*}$args
+                    
+            }
+            
+            
+            proc tag_bar {path tag_id args} {
+                
+                ::wm::widget add $path rectangle
                 ::wm::widget add $path.bar rectangle
                 ::wm::widget add $path.tag_id text
+                
+                ::wm::widget add $path.favorite button
+                ::wm::widget add $path.selected button
 
                 ::wm::widget rset $path \
                     tag_id $tag_id \
+                    rgba [::profiler::gui::util::get_tag_rgba $tag_id] \
+                    osd_relw 1.0 \
+                    osd_relx 0.99 \
+                    osd_relx_autoupdate 0.0 \
                     osd_y {[expr {-2*$sz}]} \
-                    osd_w {[rsub parent.osd_w]} \
                     osd_h {$sz} \
                     osd_clip true \
                     osd_rgba 0x00000080 \
-                    bar.osd_h {$sz} \
-                    bar.osd_relw 0.25 \
-                    bar.osd_rgba [::profiler::gui::util::get_tag_rgba $tag_id] \
-                    tag_id.osd_font {$font_sans} \
-                    tag_id.osd_x {[expr {1.5*$sz/6.}]} \
+                    tag_id.osd_font {$font_mono} \
+                    tag_id.osd_x {[expr {2.25*$sz}]} \
                     tag_id.osd_y {[expr {0.25*$sz/6.}]} \
                     tag_id.osd_size {[expr {5*$sz/6}]} \
                     tag_id.osd_rgba {0xC0C0C0FF} \
                     tag_id.osd_text $tag_id \
+                    bar.osd_relh 1 \
+                    bar.osd_relw 1 \
+                    favorite.osd_w {[expr {1*$sz}]} \
+                    favorite.osd_h {[expr {1*$sz}]} \
+                    favorite.osd_rgba 0xFFFFFF00 \
+                    favorite.osd_borderrgba 0xFFFFFF00 \
+                    favorite.text.osd_x {[expr  0.01*$sz]} \
+                    favorite.text.osd_y {[expr  -0.1*$sz]} \
+                    favorite.text.osd_text {[expr {[dict exist $::profiler::core::Configuration favorite_tags [rget parent.parent.tag_id]]?"\u2605":"\u2606"}]} \
+                    favorite.text.osd_size {[expr $sz]} \
+                    favorite.text.osd_font {$font_sans} \
+                    favorite.text.osd_rgba {0xffffffff} \
+                    favorite.on_mouse_button1_down { rset osd_rgba 0xFFFFFF40 } \
+                    favorite.on_mouse_button1_up   { rset osd_rgba 0xFFFFFF00 } \
+                    favorite.on_activation {
+                        if {[dict exist $::profiler::core::Configuration favorite_tags [rget parent.tag_id]]} {
+                            dict unset ::profiler::core::Configuration favorite_tags [rget parent.tag_id]
+                        } else {
+                            dict set ::profiler::core::Configuration favorite_tags [rget parent.tag_id] 1
+                        }
+                        ::wm::widget request_osd_refresh_recursive "wm" {}
+                    }\
+                    selected.osd_x {[expr {1*$sz}]} \
+                    selected.osd_w {[expr {1*$sz}]} \
+                    selected.osd_h {[expr {1*$sz}]} \
+                    selected.osd_rgba 0xFFFFFF00 \
+                    selected.osd_borderrgba 0xFFFFFF00 \
+                    selected.text.osd_x {[expr  0.0*$sz]} \
+                    selected.text.osd_y {[expr  -0.2*$sz]} \
+                    selected.text.osd_text {[expr {[dict get $::profiler::core::Status selected_tag]==[rget parent.parent.tag_id]?"\u25C9":"\u25CE"}]} \
+                    selected.text.osd_size {[expr $sz]} \
+                    selected.text.osd_font {$font_sans} \
+                    selected.text.osd_rgba {0xffffffff} \
+                    selected.on_mouse_button1_down { rset osd_rgba 0xFFFFFF40 } \
+                    selected.on_mouse_button1_up   { rset osd_rgba 0xFFFFFF00 } \
+                    selected.on_activation {
+                        dict set ::profiler::core::Status selected_tag [rget parent.tag_id]
+                        dict set ::profiler::core::Configuration favorite_tags [rget parent.tag_id] 1
+                        ::wm::widget request_osd_refresh_recursive "wm" {}
+                    }\
                     {*}$args
-                    
-                
-                if {0} {
-                osd create rectangle $parent.$id.favorite -x [expr 0*$h] -h $h -w $h -rgba 0x00000000
-                osd create text $parent.$id.favorite.text -x [expr 0.125*$h] -y [expr  0.125*$h/6.] -size [expr 5*$h/6] -rgba 0xffffffff -font $fs  -text "\u2606"
-                gui_add_button $parent.$id.favorite \
-                    "eval { osd configure $parent.$id.favorite -rgba 0xFFFFFF40 } " \
-                    "eval { osd configure $parent.$id.favorite -rgba 0xFFFFFF00 } " \
-                    "variable config
-                    if {\[dict exist \$config favorite_sections $id]} {
-                        dict unset config favorite_sections $id
-                    } else {
-                        dict set config favorite_sections $id 1
-                    }" \
-                    "variable config
-                    if {\[dict exist \$config favorite_sections $id]} {
-                        osd configure $parent.$id.favorite.text -text \"\\u2605\"
-                    } else {
-                        osd configure $parent.$id.favorite.text -text \"\\u2606\"
-                    }
-                    set target \[expr \[dict get \$config $parent.ordering $id]*\[dict get \$config height]]
-                    osd configure $parent.$id -y \[expr {0.6*\[osd info $parent.$id -y]+0.4*\$target}]
-                    " \
-                    "Add/Remove $id to the favorites list" 
-
-
-                osd create rectangle $parent.$id.select -x [expr 1*$h] -h $h -w $h -rgba 0x00000000
-                osd create text $parent.$id.select.text -x [expr 0.125*$h] -y [expr -0.125*$h/6.] -size [expr 5*$h/6] -rgba 0xffffffff -font $fs  -text "\u25CE"
-                gui_add_button $parent.$id.select \
-                    "osd configure $parent.$id.select -rgba 0xFFFFFF40 " \
-                    "osd configure $parent.$id.select -rgba 0xFFFFFF00 " \
-                    "eval { 
-                    variable config
-                    dict set config selected_section \"$id\" 
-                    gui_update_details \"$id\"
-                    } " \
-                    "eval { 
-                    variable config                        
-                    if { \[dict get \$config selected_section] == \"$id\" } {
-                        osd configure $parent.$id.select.text -text \"\\u25C9\"
-                    } else {
-                        osd configure $parent.$id.select.text -text \"\\u25CE\"
-                    } }" \
-                    "Select $id to be analized in detail" 
-
-                osd create rectangle $parent.$id.avg -x [expr 2*$h] -h $h -w [expr 5*$h] -rgba 0x00000000
-                osd create text $parent.$id.avg.text -x [expr 0.125*$h] -y [expr 0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fm
-                gui_add_button $parent.$id.avg "" "" "" \
-                    "variable sections
-                    set section_time_avg \[dict get \$sections $id section_time_avg]
-                    osd configure $parent.$id.avg.text -text \[format \"avg:%s\" \[gui_to_unit \$section_time_avg]]
-                    proc clamp01 {val} { set v \[expr \$val]; return \[expr \$v<0?0:\$v>1?1:\$v] }
-                    osd configure $parent.$id.bar -w \[expr \[osd info $parent.$id -w]*\[clamp01 \$section_time_avg/\[get_VDP_frame_duration]]] " \
-                    "Average duration of section: $id" 
-                
-                osd create rectangle $parent.$id.max -x [expr 7*$h] -h $h -w [expr 5*$h] -rgba 0x00000000
-                osd create text $parent.$id.max.text -x [expr 0.125*$h] -y [expr 0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fm
-                gui_add_button $parent.$id.max \
-                    "osd configure $parent.$id.max -rgba 0xFFFFFF40 " \
-                    "osd configure $parent.$id.max -rgba 0xFFFFFF00 " \
-                    "variable sections \n dict set sections $id section_time_max 0" \
-                    "variable sections
-                    osd configure $parent.$id.max.text -text \[format \"max:%s\" \[gui_to_unit \[dict get \$sections $id section_time_max]]]" \
-                    "Maximum duration of section: $id
-                    Click to reset." 
-
-                
-                }
             }
         }
-    }
-
-
-
-
-    if {0} {
-    namespace eval gui {
-        
-        namespace eval core {
-            
-            if ![info exists Status] { variable Status [dict create] }
-            if ![info exists Configuration] { variable Configuration [dict create] }
-
-
-            proc stop {} {
-                
-                if {[osd exists "profiler"]} {
-                    osd destroy profiler
-                }
-                set ::profiler::gui::core::Status [dict create]
-                return
-            }
-
-            proc resetConfiguration {} {
-                
-                set ::profiler::gui::core::Configuration [defaults::Configuration]
-                return
-            }
-
-            namespace eval wm {
-
-                if ![info exists Status] { variable Status [dict create] }
-                if ![info exists Configuration] { variable Configuration [dict create] }
-                
-                namespace eval widgets {
-                    
-                    proc add {widget_type widget_id args} {
-                        
-                        if {$widget_type == "dock"} { return [add_dock $widget_id {*}args] }
-                        if {$widget_type == "resize_button"} { return [add_resize_button $widget_id {*}args] }
-                        
-                        set widget [dict create \
-                            activated 0 \
-                        ]
-
-                        foreach {arg value} $args {
-                            dict set widget $arg $value
-                        }
-                        
-                        osd create $widget_type $widget_id
-                        
-                        dict set ::profiler::gui::core::Status active_configuration [dict create]
-                                             
-                        dict set ::profiler::gui::core::Status widgets $widget_id $widget
-                    }
-                    
-                    proc add_dock {widget_id args} {
-                        
-                        add rectangle $widget_id \
-                            -osd_setup {-w $w -relh 1 -rgba 0x00000000} \
-                            {*}$args
-                        
-                        #add resize_button profiler "\u25BA" "\u25C4" {
-                        #    set w [dict get $config width]
-                        #    set h [dict get $config height]
-                        #    osd configure profiler -x [expr {0.6*[osd info profiler -x]+0.4*(-$w+$h)}] 
-                        #} { 
-                        #    osd configure profiler -x [expr {0.6*[osd info profiler -x]+0.4*0}] 
-                        #}
-                    }
-                    
-                    proc add_toggle_button {parent icon1 icon2 upkeep1 upkeep2 args} {
-                        
-                        add rectangle $widget_id \
-                            -is_toggled 0 \
-                            -text0 $text0 \
-                            -text1 $text1 \
-                            -osd_setup   { -relx 1.0 -w [expr -1*$h] -h $h -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x808080FF} \
-                            -osd_press   { -rgba 0xC0C0C0FF } \
-                            -osd_release { -rgba 0x808080FF } \
-                            -on_activation "eval {
-                                if { \[osd info $parent.scroll.text -text] == \"$icon1\" } {
-                                    osd configure $parent.scroll.text -text \"$icon2\"
-                                } else {
-                                    osd configure $parent.scroll.text -text \"$icon1\"
-                                }
-                            }"
-                            -on_upkeep "eval {
-                                set parent $parent
-                                variable config
-                                if { \[osd info $parent.scroll.text -text] == \"$icon1\" } {
-                                    $upkeep1
-                                } else {
-                                    $upkeep2
-                                }
-                            }"
-                            -on_hover "$parent Scroll Button"
-                            {*}$args
-                        
-                        add text $widget_id.text -on_setup {
-                            -x [expr 1.5*$height/6.-$height] -y [expr -0.25*$height/6.] -size [expr 5*$height/6] -rgba 0x000000FF
-                            -font $font_mono -text $icon2
-                        }
-                    }
-                    
-                    proc add_resize_button {parent icon1 icon2 upkeep1 upkeep2 args} {
-                        
-                        add rectangle $widget_id \
-                            -osd_setup { -relx 1.0 -w [expr -1*$h] -h $h -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x808080FF} \
-                            -osd_press { -rgba 0xC0C0C0FF } \
-                            -osd_release { -rgba 0x808080FF } \
-                            -on_activation "eval {
-                                if { \[osd info $parent.scroll.text -text] == \"$icon1\" } {
-                                    osd configure $parent.scroll.text -text \"$icon2\"
-                                } else {
-                                    osd configure $parent.scroll.text -text \"$icon1\"
-                                }
-                            }"
-                            -on_upkeep "eval {
-                                set parent $parent
-                                variable config
-                                if { \[osd info $parent.scroll.text -text] == \"$icon1\" } {
-                                    $upkeep1
-                                } else {
-                                    $upkeep2
-                                }
-                            }"
-                            -on_hover "$parent Scroll Button"
-                            {*}$args
-                        
-                        add text $widget_id.text -on_setup {
-                            -x [expr 1.5*$height/6.-$height] -y [expr -0.25*$height/6.] -size [expr 5*$height/6] -rgba 0x000000FF
-                            -font $font_mono -text $icon2
-                        }
-                    }
-                }
-                
-        }
-
-            namespace eval defaults {
-
-                proc Status {} { return [dict create \
-                    widgets [dict create] \
-                    active_configuration [dict create] \
-                ]}
-
-                proc Configuration {} { return [dict create \
-                    width 150 \
-                    height 6 \
-                    font_mono "skins/DejaVuSansMono.ttf" \
-                    font_sans "skins/DejaVuSans.ttf" \
-                    unit % \
-                    avg_ratio 20 \
-                    current_help_widget "" \
-                    num_sections 0 \
-                    num_favorite_sections 0 \
-                    num_sections_in_usage 0 \
-                    selected_section "" \
-                    favorite_sections [dict create] \
-                    section_color [dict create] \
-                    next_color 0 \
-                    sorting_criteria "avg" \
-                    profiler.all.ordering [dict create] \
-                    profiler.favorite.ordering [dict create] \
-                ]}
-            }
-
-            
-            
-            if 0 {
-
-            namespace eval widgets {
-                
-                namespace eval dock {
-                    
-                    #
-                    # Main profilerr Window
-                    #
-                    osd create rectangle profiler -x 0 -y 20 -w $w -relh 1 -scaled true -clip true -rgba 0x00000000
-                    after "mouse button1 down" [namespace code gui_on_mouse_button1_down]
-
-
-                    
-                }
-
-                namespace eval window {
-
-
-
-                }
-
-                namespace eval scrollbox {
-                }
-
-                namespace eval tag_bar {
-                    proc gui_add_info_bar {parent id} {
-                        
-                        variable config
-                        set w [dict get $config width]
-                        set h [dict get $config height]
-                        set fs [dict get $config font_sans]
-                        set fm [dict get $config font_mono]
-                        osd create rectangle $parent.$id -x 0 -y [expr -2*$h] -w $w -h $h -clip true -rgba 0x00000088
-                        osd create rectangle $parent.$id.bar -x 0 -y 0 -w 0 -h $h -rgba [gui_get_color $id]
-                                
-                        osd create rectangle $parent.$id.favorite -x [expr 0*$h] -h $h -w $h -rgba 0x00000000
-                        osd create text $parent.$id.favorite.text -x [expr 0.125*$h] -y [expr  0.125*$h/6.] -size [expr 5*$h/6] -rgba 0xffffffff -font $fs  -text "\u2606"
-                        gui_add_button $parent.$id.favorite \
-                            "eval { osd configure $parent.$id.favorite -rgba 0xFFFFFF40 } " \
-                            "eval { osd configure $parent.$id.favorite -rgba 0xFFFFFF00 } " \
-                            "variable config
-                            if {\[dict exist \$config favorite_sections $id]} {
-                                dict unset config favorite_sections $id
-                            } else {
-                                dict set config favorite_sections $id 1
-                            }" \
-                            "variable config
-                            if {\[dict exist \$config favorite_sections $id]} {
-                                osd configure $parent.$id.favorite.text -text \"\\u2605\"
-                            } else {
-                                osd configure $parent.$id.favorite.text -text \"\\u2606\"
-                            }
-                            set target \[expr \[dict get \$config $parent.ordering $id]*\[dict get \$config height]]
-                            osd configure $parent.$id -y \[expr {0.6*\[osd info $parent.$id -y]+0.4*\$target}]
-                            " \
-                            "Add/Remove $id to the favorites list" 
-
-
-                        osd create rectangle $parent.$id.select -x [expr 1*$h] -h $h -w $h -rgba 0x00000000
-                        osd create text $parent.$id.select.text -x [expr 0.125*$h] -y [expr -0.125*$h/6.] -size [expr 5*$h/6] -rgba 0xffffffff -font $fs  -text "\u25CE"
-                        gui_add_button $parent.$id.select \
-                            "osd configure $parent.$id.select -rgba 0xFFFFFF40 " \
-                            "osd configure $parent.$id.select -rgba 0xFFFFFF00 " \
-                            "eval { 
-                            variable config
-                            dict set config selected_section \"$id\" 
-                            gui_update_details \"$id\"
-                            } " \
-                            "eval { 
-                            variable config                        
-                            if { \[dict get \$config selected_section] == \"$id\" } {
-                                osd configure $parent.$id.select.text -text \"\\u25C9\"
-                            } else {
-                                osd configure $parent.$id.select.text -text \"\\u25CE\"
-                            } }" \
-                            "Select $id to be analized in detail" 
-
-                        osd create rectangle $parent.$id.avg -x [expr 2*$h] -h $h -w [expr 5*$h] -rgba 0x00000000
-                        osd create text $parent.$id.avg.text -x [expr 0.125*$h] -y [expr 0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fm
-                        gui_add_button $parent.$id.avg "" "" "" \
-                            "variable sections
-                            set section_time_avg \[dict get \$sections $id section_time_avg]
-                            osd configure $parent.$id.avg.text -text \[format \"avg:%s\" \[gui_to_unit \$section_time_avg]]
-                            proc clamp01 {val} { set v \[expr \$val]; return \[expr \$v<0?0:\$v>1?1:\$v] }
-                            osd configure $parent.$id.bar -w \[expr \[osd info $parent.$id -w]*\[clamp01 \$section_time_avg/\[get_VDP_frame_duration]]] " \
-                            "Average duration of section: $id" 
-                        
-                        osd create rectangle $parent.$id.max -x [expr 7*$h] -h $h -w [expr 5*$h] -rgba 0x00000000
-                        osd create text $parent.$id.max.text -x [expr 0.125*$h] -y [expr 0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fm
-                        gui_add_button $parent.$id.max \
-                            "osd configure $parent.$id.max -rgba 0xFFFFFF40 " \
-                            "osd configure $parent.$id.max -rgba 0xFFFFFF00 " \
-                            "variable sections \n dict set sections $id section_time_max 0" \
-                            "variable sections
-                            osd configure $parent.$id.max.text -text \[format \"max:%s\" \[gui_to_unit \[dict get \$sections $id section_time_max]]]" \
-                            "Maximum duration of section: $id
-                            Click to reset." 
-
-                        osd create text $parent.$id.name     -x [expr 12*$h] -y [expr   0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xffffffff -font $fs -text $id
-                                        
-                    }
-                }
-                
-                namespace eval button {
-                    
-    #                        osd configure profiler.config.info.text -text [dict get $config buttons $widget help]
-    # dict set config current_help_widget $widget
-                }
-
-            }
-            
-            namespace eval windows {
-                
-                namespace eval configuration {
-                # Config Buttons
-                proc add_config_button {name x y text on_pressed help} {
-                    
-                    variable config
-                    
-                    set w [dict get $config width]
-                    set h [dict get $config height]
-                    
-                    osd create rectangle profiler.config.$name  -x [expr $x*$w/4.] -y [expr ($y+1)*$h] -w [expr $w/4-0.1*$h] -h [expr 0.9*$h] -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x808080FF
-                    osd create text      profiler.config.$name.text -x [expr 1.5*$h/6.] -y [expr 0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xFFFFFFFF \
-                        -font [dict get $config font_sans] -text [eval $text]
-
-                    gui_add_button profiler.config.$name \
-                        "eval { osd configure profiler.config.$name -rgba 0xC0C0C0FF } " \
-                        "eval { osd configure profiler.config.$name -rgba 0x808080FF } " \
-                        "eval { $on_pressed }" \
-                        "" \
-                        "$help"
-                }
-
-                osd create rectangle profiler.config -y $h -w $w -h [expr 1*$h] -clip true -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x00000088
-                osd create text      profiler.config.text -x 0 -y [expr 0.5*$h/6] -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $config font_sans] \
-                    -text "Configuration"
-
-                add_scroll_button profiler.config "\u25BC" "\u25B2" {
-                    osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*[dict get $config height]}]
-                } { 
-                    osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*5*[dict get $config height]}]
-                }
-                    
-                
-                add_config_button sort  0 0 {format "Sort:"} {} "Sort"
-                add_config_button unit  1 0 {format "Unit:"} {} "Unit"
-                add_config_button z80i  2 0 {format "Z80i:"} {} "z80i"
-                add_config_button file  3 0 {format "File:"} {} "File"
-                add_config_button pause 0 1 {format "Pause:"} {} "Pause"
-                add_config_button clear 1 1 {format "Clear:"} {} "Clear"
-                add_config_button avg   2 1 {format "Avg:"} {} "Avg"
-                add_config_button hsize   3 1 {format "H Size: %d" [dict get $config height]} {
-                    variable config
-                    dict set config height [expr 5+([dict get $config height]+1-5)%3]
-                    osd destroy profiler
-                    gui_create
-                } "Toggles text Size between 5, 6, and 7"
-
-                osd create rectangle profiler.config.info  -x [expr 0*$w/4.] -y [expr (2+1)*$h] -w [expr $w-0.1*$h] -h [expr 1.9*$h] -rgba 0x40404080
-                osd create text      profiler.config.info.text -x [expr 1.5*$h/6.] -y [expr 0.5*$h/6.] -size [expr 4*$h/6] -rgba 0xC0C0C0FF \
-                        -font [dict get $config font_sans] -text "Command Info"
-
-                }
-                
-                namespace eval all_tags {
-
-                osd create rectangle profiler.all -w $w -h [expr 1*$h] -clip true -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x00000088
-                osd create text      profiler.all.text -x 0 -y [expr 0.5*$h/6] -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $config font_sans] \
-                    -text "All Tags"
-
-                add_scroll_button profiler.all "\u25BC" "\u25B2" {
-                    osd configure profiler.all -y [expr {[osd info profiler.config -y] + [osd info profiler.config -h]}]                
-                    osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*[dict get $config height]}]
-                } { 
-                    osd configure $parent -y [expr {[osd info profiler.config -y] + [osd info profiler.config -h]}]                
-                    osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*(1+[dict get $config num_sections])*[dict get $config height]}]
-                }
-
-                }
-                
-                namespace eval favorite_tags {
-
-                osd create rectangle profiler.favorite -w $w -h [expr 1*$h] -clip true -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x00000088
-                osd create text      profiler.favorite.text -x 0 -y [expr 0.5*$h/6] -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $config font_sans] \
-                    -text "Favorite Tags"
-
-                add_scroll_button profiler.favorite "\u25BC" "\u25B2" {
-                    osd configure $parent -y [expr {[osd info profiler.all -y] + [osd info profiler.all -h]}]                
-                    osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*[dict get $config height]}]
-                } { 
-                    osd configure $parent -y [expr {[osd info profiler.all -y] + [osd info profiler.all -h]}]                
-                    osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*(1+[dict get $config num_favorite_sections])*[dict get $config height]}]
-                }
-
-                }
-                
-                namespace eval timeline {
-                osd create rectangle profiler.detailed -w $w -h [expr 1*$h] -clip true -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x00000088
-                osd create text      profiler.detailed.text -x 0 -y [expr 0.5*$h/6] -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $config font_sans] \
-                    -text "Usage and Timeline:"
-
-                add_scroll_button profiler.detailed "\u25BC" "\u25B2" {
-                    osd configure $parent -y [expr {[osd info profiler.info -y] + [osd info profiler.info -h]}]                
-                    osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*[dict get $config height]}]
-                } { 
-                    osd configure $parent -y [expr {[osd info profiler.info -y] + [osd info profiler.info -h]}]                
-                    osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*(5+[dict get $config num_sections_in_usage])*[dict get $config height]}]
-                }
-                
-                osd create rectangle profiler.detailed.timeline_cpu -y [expr 1.*$h] -w $w -h [expr 2.*$h] -clip true
-                osd create rectangle profiler.detailed.timeline_vdp -y [expr 3.*$h] -w $w -h [expr 2.*$h] -clip true
-                osd create rectangle profiler.detailed.usage -y [expr 5.*$h] -w $w -relh 1 -clip true -rgba 0x00000088        
-                }
-                
-                namespace eval details {
-                osd create rectangle profiler.info -w $w -h [expr 1*$h] -clip true -bordersize [expr 0.1*$h] -borderrgba 0x000000FF -rgba 0x00000088
-                osd create text      profiler.info.text -x 0 -y [expr 0.5*$h/6] -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $config font_sans] \
-                    -text "Information:"
-
-                add_scroll_button profiler.info "\u25BC" "\u25B2" {
-                    osd configure $parent -y [expr {[osd info profiler.favorite -y] + [osd info profiler.favorite -h]}]                
-                    osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*[dict get $config height]}]
-                } { 
-                    osd configure $parent -y [expr {[osd info profiler.favorite -y] + [osd info profiler.favorite -h]}]                
-                    osd configure $parent -h [expr {0.6*[osd info $parent -h]+0.4*5*[dict get $config height]}]
-                }
-                
-       proc gui_update_details {id} {
-                
-                variable config
-                variable sections
-
-                set w [dict get $config width]
-                set h [dict get $config height]
-                osd destroy profiler.detailed.timeline_cpu
-                osd destroy profiler.detailed.timeline_vdp
-                osd destroy profiler.detailed.usage
-
-                foreach button [dict keys [dict get $config buttons] profiler.detailed.{*}] { dict unset config buttons $button }
-
-                osd create rectangle profiler.detailed.timeline_cpu -y [expr 1.*$h] -w $w -h [expr 2.*$h] -clip true
-                osd create rectangle profiler.detailed.timeline_vdp -y [expr 3.*$h] -w $w -h [expr 2.*$h] -clip true
-                osd create rectangle profiler.detailed.usage -y [expr 5.*$h] -w $w -relh 1 -clip true -rgba 0x00000088       
-                if {[dict exists $sections $id]} {
-                    
-                    osd configure profiler.detailed.text -text [format "Usage and Timeline: %s" $id]
-                    osd configure profiler.info.text -text [format "Information: %s" $id]
-                    
-
-                    if {[dict exists $sections $id last_log]} {
-                        
-                        set ts_begin_parent [dict get $sections $id last_log_ts_begin]
-                        set ts_end_parent [dict get $sections $id last_log_ts_end]
-                        set td_parent [expr {$ts_end_parent-$ts_begin_parent}]
-                        puts stderr [format "Parent: %s %7.5f" $id $td_parent]
-                        set idx 0
-                        set depth_level 0
-                        set subsections [dict create]
-
-                        foreach {sub_id type timestamp} [dict get $sections $id last_log] {
-
-                            if {![dict exists $subsections $sub_id]} {
-                                dict set subsections $sub_id [dict create \
-                                    num_invocations 0 \
-                                    total_time 0.0 \
-                                    ts_begin 0.0 \
-                                    depth $depth_level \
-                                ]
-                                incr depth_level
-                            }
-                            
-                            if {$type=="begin"} {                        
-                                dict with subsections $sub_id { incr num_invocations }
-                                dict set  subsections $sub_id ts_begin $timestamp
-                                
-                            } elseif {$type=="end"} {                        
-                                set  ts_begin [dict get $subsections $sub_id ts_begin]
-                                set  ts_end $timestamp
-                                set  td [expr $ts_end-$ts_begin]
-                                puts stderr [format "Sub: %s %7.5f" $sub_id $td_parent]
-                                                        
-                                dict with subsections $sub_id { set total_time [expr $total_time+$ts_end-$ts_begin]}
-
-                                incr idx
-                                set timeline_bar_name [format "profiler.detailed.timeline_cpu.bar%03d" $idx]
-                                osd create rectangle $timeline_bar_name -x 0 -y 0 -w 0 -h [expr 2*$h] -rgba [gui_get_color $sub_id]
-                                puts stderr [format "w: %s %s %s %s" $ts_end $ts_begin $td_parent ($ts_end-$ts_begin)]
-                                osd configure $timeline_bar_name -x [expr $w*($ts_begin-$ts_begin_parent)/$td_parent]
-                                osd configure $timeline_bar_name -w [expr $w*($ts_end-$ts_begin)/$td_parent]
-
-                                set usage_bar_name [format "profiler.detailed.usage.bar%03d" $idx]
-                                osd create rectangle $usage_bar_name -x 0 -y [expr [dict get $subsections $sub_id depth]*$h] -w 0 -h [expr 1*$h] -rgba [gui_get_color $sub_id]
-                                osd configure $usage_bar_name -x [expr $w*($ts_begin-$ts_begin_parent)/$td_parent]
-                                osd configure $usage_bar_name -w [expr $w*($ts_end-$ts_begin)/$td_parent]
-                            }
-                        }
-                        
-                        set idx 0
-                        dict for {sub_id subsection}  $subsections {
-                            incr idx
-                            set usage_text_time [format "profiler.detailed.usage.time%03d" $idx]
-                            osd create text $usage_text_time -x [expr 0.125*$h] -y [expr (0.5/6 + [dict get $subsections $sub_id depth])*$h] \
-                                -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $config font_mono] \
-                                -text [format "T:%s" [gui_to_unit [dict get $subsections $sub_id total_time]]]
-
-                            set usage_text_name [format "profiler.detailed.usage.name%03d" $idx]
-                            osd create text $usage_text_name -x [expr 4.125*$h] -y [expr (0.5/6 + [dict get $subsections $sub_id depth])*$h] \
-                                -size [expr 4*$h/6] -rgba 0xffffffff -font [dict get $config font_sans] \
-                                -text $sub_id
-                                
-                        }
-                        
-                    
-                        dict set config num_sections_in_usage $depth_level
-                    }
-                }
-            }
-                
-                    
-                }
-                
-                
-            }
-            
-            
-
-    
-            }
-        
-        }
-    
-        proc stop  {} { core::stop }
-        proc start {} { ::profiler::start; core::start}        
-    }
-
     }
 }
 
